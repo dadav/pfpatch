@@ -1,0 +1,103 @@
+name: Create Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies (including dev)
+        run: uv sync --all-extras --dev
+
+      - name: Build with PyInstaller (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          uv run pyinstaller --onefile --noconsole --name pfpatch --add-data "patches;patches" --hidden-import pefile --hidden-import yaml --hidden-import PyQt6 --hidden-import PyQt6.QtCore --hidden-import PyQt6.QtWidgets --hidden-import PyQt6.QtGui pfpatch.py
+
+      - name: Build with PyInstaller (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          uv run pyinstaller --onefile --noconsole --name pfpatch --add-data "patches:patches" --hidden-import pefile --hidden-import yaml --hidden-import PyQt6 --hidden-import PyQt6.QtCore --hidden-import PyQt6.QtWidgets --hidden-import PyQt6.QtGui pfpatch.py
+
+      - name: Upload artifact (Windows)
+        if: matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pfpatch-windows
+          path: dist/pfpatch.exe
+          retention-days: 30
+
+      - name: Upload artifact (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pfpatch-linux
+          path: dist/pfpatch
+          retention-days: 30
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: pfpatch-windows
+          path: release-artifacts
+
+      - name: Download Linux artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: pfpatch-linux
+          path: release-artifacts
+
+      - name: Extract tag name and version
+        id: tag
+        run: |
+          TAG_NAME=${GITHUB_REF#refs/tags/}
+          VERSION=${TAG_NAME#v}
+          echo "TAG_NAME=$TAG_NAME" >> $GITHUB_OUTPUT
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Rename Windows artifact
+        run: |
+          mv release-artifacts/pfpatch.exe "release-artifacts/pfpatch-v${{ steps.tag.outputs.VERSION }}-windows.exe"
+
+      - name: Rename Linux artifact
+        run: |
+          mv release-artifacts/pfpatch "release-artifacts/pfpatch-v${{ steps.tag.outputs.VERSION }}-linux"
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.tag.outputs.TAG_NAME }}
+          name: Release ${{ steps.tag.outputs.TAG_NAME }}
+          files: |
+            release-artifacts/pfpatch-v${{ steps.tag.outputs.VERSION }}-windows.exe
+            release-artifacts/pfpatch-v${{ steps.tag.outputs.VERSION }}-linux
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+

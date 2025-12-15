@@ -9,3 +9,6 @@ wheels/
 # Virtual environments
 .venv
 *.exe
+backups
+settings.yml
+*.spec
