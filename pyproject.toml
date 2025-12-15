@@ -1,0 +1,17 @@
+[project]
+name = "pfpatch"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pefile>=2024.8.26",
+    "pyqt6>=6.10.1",
+    "pyyaml>=6.0.3",
+]
+
+[dependency-groups]
+dev = [
+    "neovim>=0.3.1",
+    "pyinstaller>=6.17.0",
+]

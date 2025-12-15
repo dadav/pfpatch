@@ -1,0 +1,22 @@
+---
+files:
+  gameserver:
+    default: SR_Gameserver.exe
+
+patches:
+  - name: Party mobs member count
+    description: |
+      How many players need to be in a party for party monster to spawn.
+    editable: true
+    file: gameserver
+    changes:
+      - offset: 0x00558F24
+        size: 1
+  - name: Foo
+    description: |
+      bar
+    editable: false
+    file: gameserver
+    changes:
+      - offset: 0x00558F24
+        value: "02"
