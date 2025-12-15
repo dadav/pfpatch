@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QLabel,
     QSizePolicy,
+    QMessageBox,
 )
 from pathlib import Path
 
@@ -37,7 +38,20 @@ class MainWindow(QMainWindow):
         self.select_config_dir("patches")
 
     def apply_patches(self):
-        pass
+        for patch in self.patches.values():
+            binary_path, binary = self.binary_files[patch["file"]]
+            if patch["editable"]:
+                new_value = int(patch["widget"].text()).to_bytes()
+                addr = patch["changes"][0]["offset"] - binary.OPTIONAL_HEADER.ImageBase
+                binary.set_bytes_at_rva(addr, new_value)
+            else:
+                if patch["widget"].isChecked():
+                    for change in patch["changes"]:
+                        addr = change["offset"] - binary.OPTIONAL_HEADER.ImageBase
+                        binary.set_bytes_at_rva(addr, bytes.fromhex(change["value"]))
+
+            binary.write(binary_path)
+            QMessageBox.information(self, "Success", "Patches applied to binary!")
 
     def select_binary(self, name, result_object: QLineEdit, default=None):
         selected_file, _ = QFileDialog.getOpenFileName(
@@ -45,7 +59,10 @@ class MainWindow(QMainWindow):
         )
 
         if selected_file:
-            self.binary_files[name] = pefile.PE(selected_file, fast_load=True)
+            self.binary_files[name] = (
+                selected_file,
+                pefile.PE(selected_file, fast_load=True),
+            )
             result_object.setText(selected_file)
             self.update_patches_ui(self.config_data["patches"])
             self.select_first_warning_widget.setVisible(False)
@@ -104,19 +121,20 @@ class MainWindow(QMainWindow):
                 desc_label.setStyleSheet("color: gray;")
                 patch_layout.addWidget(desc_label)
 
-            binary = self.binary_files[patch["file"]]
+            _, binary = self.binary_files[patch["file"]]
             if patch["editable"]:
-                txt = QLineEdit()
-                patch_layout.addWidget(txt)
+                value_widget = QLineEdit()
+                patch_layout.addWidget(value_widget)
                 assert len(patch["changes"]) == 1
 
                 change = patch["changes"][0]
                 addr = change["offset"] - binary.OPTIONAL_HEADER.ImageBase
                 current = int.from_bytes(binary.get_data(addr, int(change["size"])))
-                txt.setText(str(current))
+                value_widget.setText(str(current))
+                patch["widget"] = value_widget
             else:
-                chk = QCheckBox("Enable")
-                patch_layout.addWidget(chk)
+                value_widget = QCheckBox("Enable")
+                patch_layout.addWidget(value_widget)
                 for change in patch["changes"]:
                     addr = change["offset"] - binary.OPTIONAL_HEADER.ImageBase
                     desired = bytes.fromhex(change["value"])
@@ -124,7 +142,8 @@ class MainWindow(QMainWindow):
                     if current != desired:
                         break
                 else:
-                    chk.setChecked(True)
+                    value_widget.setChecked(True)
+                patch["widget"] = value_widget
 
             patch_group.setLayout(patch_layout)
             self.patches_layout.addWidget(patch_group)
