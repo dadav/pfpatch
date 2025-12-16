@@ -30,7 +30,6 @@ class MainWindow(QMainWindow):
         self.backup_dir = Path("backups")
         self.backup_dir.mkdir(exist_ok=True)
         self.settings_file = Path("settings.yml")
-        self.binary_paths = dict()
 
         self.setWindowTitle("Private Files Patcher")
         self.setMinimumSize(800, 600)
@@ -41,13 +40,14 @@ class MainWindow(QMainWindow):
 
     def load_settings(self):
         """Load saved binary paths and config directory from settings file"""
+        self.saved_binary_paths = dict()
         if self.settings_file.exists():
             try:
                 with open(self.settings_file, "r") as f:
                     data = yaml.load(f, Loader=yaml.SafeLoader)
                     if data:
                         if "binary_paths" in data:
-                            self.binary_paths = data["binary_paths"]
+                            self.saved_binary_paths = data["binary_paths"]
                         if "config_dir" in data:
                             self.config_dir = data["config_dir"]
                         else:
@@ -60,8 +60,11 @@ class MainWindow(QMainWindow):
     def save_settings(self):
         """Save binary paths and config directory to settings file"""
         try:
+            # Extract paths from binary_files
+            binary_paths = {name: path for name, (path, _) in self.binary_files.items()}
+            
             settings_data = {
-                "binary_paths": self.binary_paths,
+                "binary_paths": binary_paths,
             }
             if hasattr(self, 'config_dir') and self.config_dir:
                 settings_data["config_dir"] = self.config_dir
@@ -72,11 +75,7 @@ class MainWindow(QMainWindow):
             print(f"Failed to save settings: {e}")
 
     def load_defaults(self):
-        # Load saved config directory or default to "patches"
-        if hasattr(self, 'config_dir') and self.config_dir and Path(self.config_dir).exists():
-            self.select_config_dir(self.config_dir)
-        else:
-            self.select_config_dir("patches")
+        self.select_config_dir("patches")
 
     def get_backup_path(self, binary_name):
         """Generate backup file path for a binary"""
@@ -206,8 +205,7 @@ class MainWindow(QMainWindow):
                 )
                 result_object.setText(selected_file)
                 
-                # Save binary path to settings
-                self.binary_paths[name] = selected_file
+                # Save settings after loading binary
                 self.save_settings()
                 
                 # Update patches UI if config is loaded
@@ -240,10 +238,6 @@ class MainWindow(QMainWindow):
             config_path = Path(selected_path)
             if not config_path.exists():
                 return
-            
-            # Save the config directory to settings
-            self.config_dir = str(config_path)
-            self.save_settings()
             
             self.config_files_cbox.clear()
             self.clear_ui()
@@ -372,15 +366,17 @@ class MainWindow(QMainWindow):
         self.binary_files.clear()
 
         for binary_name, binary_data in data.items():
-            patch_group = QGroupBox(binary_name)
-            patch_layout = QHBoxLayout()
+            binary_layout = QHBoxLayout()
 
+            label = QLabel(f"{binary_name}:")
+            label.setMinimumWidth(100)
+            
             file_txt = QLineEdit()
             file_txt.setEnabled(False)
             
             # Try to load saved path
-            if binary_name in self.binary_paths:
-                saved_path = self.binary_paths[binary_name]
+            if binary_name in self.saved_binary_paths:
+                saved_path = self.saved_binary_paths[binary_name]
                 if Path(saved_path).exists():
                     try:
                         self.binary_files[binary_name] = (
@@ -410,11 +406,11 @@ class MainWindow(QMainWindow):
                 )
             )
 
-            patch_layout.addWidget(file_txt)
-            patch_layout.addWidget(file_btn)
+            binary_layout.addWidget(label)
+            binary_layout.addWidget(file_txt)
+            binary_layout.addWidget(file_btn)
 
-            patch_group.setLayout(patch_layout)
-            self.files_layout.addWidget(patch_group)
+            self.files_layout.addLayout(binary_layout)
 
         self.files_layout.addStretch()
 
@@ -447,6 +443,12 @@ class MainWindow(QMainWindow):
         files_scroll.setSizePolicy(
             QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum
         )
+        files_scroll.setStyleSheet("""
+            QScrollArea {
+                border: none;
+                background-color: transparent;
+            }
+        """)
         self.files_widget = QWidget()
         self.files_layout = QVBoxLayout(self.files_widget)
         files_scroll.setWidget(self.files_widget)
@@ -457,6 +459,12 @@ class MainWindow(QMainWindow):
         patches_layout = QVBoxLayout()
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("""
+            QScrollArea {
+                border: none;
+                background-color: transparent;
+            }
+        """)
         self.patches_widget = QWidget()
         self.patches_layout = QVBoxLayout(self.patches_widget)
         scroll.setWidget(self.patches_widget)
