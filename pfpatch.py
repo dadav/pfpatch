@@ -1,6 +1,7 @@
 import sys
 import yaml
 import pefile
+import operator
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple, Union
 from pydantic import BaseModel, Field, field_validator
@@ -12,6 +13,7 @@ from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
+    QGridLayout,
     QGroupBox,
     QPushButton,
     QComboBox,
@@ -30,6 +32,7 @@ class PatchChange(BaseModel):
     offset: int
     value: Optional[str] = None
     size: Optional[int] = None
+    formula: Optional[str] = None  # Formula/expression for editable patches (e.g., "value * 0x10", "value + 5")
 
     @field_validator("value")
     @classmethod
@@ -42,6 +45,20 @@ class PatchChange(BaseModel):
             return v
         except ValueError:
             raise ValueError(f"Invalid hex value: {v}")
+
+    @field_validator("formula")
+    @classmethod
+    def validate_formula(cls, v: Optional[str]) -> Optional[str]:
+        """Validate formula syntax (basic check)"""
+        if v is None:
+            return None
+        v = v.strip()
+        if not v:
+            return None
+        # Basic syntax check - must contain 'value' variable
+        if 'value' not in v:
+            raise ValueError("Formula must contain 'value' variable")
+        return v
 
 
 class Patch(BaseModel):
@@ -61,12 +78,21 @@ class Patch(BaseModel):
         if not v:
             raise ValueError("Patch must have at least one change")
 
-        # If editable, must have exactly one change with size
+        # If editable, all changes must have size specified
         if info.data.get("editable", False):
-            if len(v) != 1:
-                raise ValueError("Editable patches must have exactly one change")
-            if v[0].size is None:
-                raise ValueError("Editable patches must specify size")
+            sizes = []
+            for i, change in enumerate(v):
+                if change.size is None:
+                    raise ValueError(
+                        f"Editable patch change {i} must specify size"
+                    )
+                sizes.append(change.size)
+            
+            # All changes should have the same size for consistency
+            if len(set(sizes)) > 1:
+                raise ValueError(
+                    "All changes in an editable patch must have the same size"
+                )
         else:
             for i, change in enumerate(v):
                 if change.value is None:
@@ -136,6 +162,52 @@ class MainWindow(QMainWindow):
     def _offset_to_rva(self, offset: int, binary: pefile.PE) -> int:
         """Convert virtual address offset to RVA (Relative Virtual Address)"""
         return offset - binary.OPTIONAL_HEADER.ImageBase
+    
+    def _evaluate_formula(self, formula: Optional[str], value: int) -> int:
+        """Safely evaluate a formula expression with the given value
+        
+        Supports standard Python math operations: +, -, *, /, //, %, **
+        Supports bitwise operations: &, |, ^, <<, >>
+        Supports functions: abs, min, max, pow, round
+        Supports hex literals: 0x10, 0xFF, etc.
+        """
+        if formula is None or not formula.strip():
+            return value
+        
+        # Create a safe evaluation context
+        # Only allow specific builtins and math operations
+        safe_builtins = {
+            "abs": abs,
+            "min": min,
+            "max": max,
+            "pow": pow,
+            "round": round,
+            "int": int,
+            "float": float,
+        }
+        
+        safe_dict = {
+            "value": value,
+            "__builtins__": safe_builtins,
+        }
+        
+        try:
+            # Compile and evaluate the expression
+            # This allows standard Python operators (+, -, *, /, etc.)
+            code = compile(formula, "<formula>", "eval")
+            result = eval(code, safe_dict, {})
+            
+            if not isinstance(result, (int, float)):
+                raise ValueError(f"Formula must evaluate to a number, got {type(result)}")
+            return int(result)
+        except NameError as e:
+            raise ValueError(f"Invalid variable in formula: {e}")
+        except SyntaxError as e:
+            raise ValueError(f"Invalid formula syntax: {e}")
+        except ZeroDivisionError as e:
+            raise ValueError(f"Division by zero in formula: {e}")
+        except Exception as e:
+            raise ValueError(f"Error evaluating formula '{formula}': {e}")
     
     def _close_binary(self, binary_name: str) -> None:
         """Close and remove a binary file from memory"""
@@ -305,17 +377,67 @@ class MainWindow(QMainWindow):
                             continue
 
                         new_value_int = int(new_value_text)
-                        change = patch.changes[0]
-                        if change.size is None:
+                        # Get size from first change (all should have same size per validation)
+                        if not patch.changes or patch.changes[0].size is None:
                             QMessageBox.warning(
                                 self, "Error", f"Patch {patch_name} has no size specified"
                             )
                             continue
-                        new_value = new_value_int.to_bytes(change.size, byteorder="little")
+                        size = patch.changes[0].size
 
-                        addr = self._offset_to_rva(change.offset, binary)
-                        binary.set_bytes_at_rva(addr, new_value)
-                        modified_binaries.add(binary_name)
+                        # Apply value to all changes (with formulas if specified)
+                        success = True
+                        for change in patch.changes:
+                            if change.size != size:
+                                QMessageBox.warning(
+                                    self, "Error", 
+                                    f"Patch {patch_name} has inconsistent sizes"
+                                )
+                                success = False
+                                break
+                            
+                            # Calculate final value using formula if specified, otherwise use value as-is
+                            try:
+                                final_value_int = self._evaluate_formula(change.formula, new_value_int)
+                            except ValueError as e:
+                                QMessageBox.warning(
+                                    self, "Error",
+                                    f"Invalid formula at offset {change.offset:#x}: {e}"
+                                )
+                                success = False
+                                break
+                            
+                            # Check for overflow based on size
+                            max_value = (1 << (size * 8)) - 1
+                            if final_value_int > max_value:
+                                QMessageBox.warning(
+                                    self, "Error",
+                                    f"Value {final_value_int} exceeds maximum for {size} byte(s) at offset {change.offset:#x}"
+                                )
+                                success = False
+                                break
+                            if final_value_int < 0:
+                                QMessageBox.warning(
+                                    self, "Error",
+                                    f"Value {final_value_int} is negative at offset {change.offset:#x}"
+                                )
+                                success = False
+                                break
+                            
+                            try:
+                                final_value = final_value_int.to_bytes(size, byteorder="little")
+                                addr = self._offset_to_rva(change.offset, binary)
+                                binary.set_bytes_at_rva(addr, final_value)
+                            except Exception as e:
+                                QMessageBox.warning(
+                                    self, "Error",
+                                    f"Failed to apply patch at offset {change.offset:#x}: {e}"
+                                )
+                                success = False
+                                break
+                        
+                        if success:
+                            modified_binaries.add(binary_name)
                     except ValueError as e:
                         QMessageBox.warning(
                             self, "Error", f"Invalid value in {patch_name}: {str(e)}"
@@ -487,7 +609,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load config: {str(e)}")
 
-    def clear_layout(self, layout: Union[QVBoxLayout, QHBoxLayout]) -> None:
+    def clear_layout(self, layout: Union[QVBoxLayout, QHBoxLayout, QGridLayout]) -> None:
         """Recursively clear all widgets from a layout"""
         while layout.count():
             item = layout.takeAt(0)
@@ -501,7 +623,7 @@ class MainWindow(QMainWindow):
         self.clear_layout(self.patches_layout)
         self.patches.clear()
 
-        for patch in patches:
+        for idx, patch in enumerate(patches):
             try:
                 binary_name = patch.file
 
@@ -523,22 +645,72 @@ class MainWindow(QMainWindow):
                     if binary_loaded:
                         _, binary = self.binary_files[binary_name]
                         if len(patch.changes) > 0:
-                            change = patch.changes[0]
-                            if change.size is not None:
+                            # Check if all changes have the same value
+                            first_change = patch.changes[0]
+                            if first_change.size is not None:
                                 try:
-                                    addr = self._offset_to_rva(change.offset, binary)
+                                    addr = self._offset_to_rva(first_change.offset, binary)
                                     current = int.from_bytes(
-                                        binary.get_data(addr, change.size), byteorder="little"
+                                        binary.get_data(addr, first_change.size), byteorder="little"
                                     )
-                                    value_widget.setText(str(current))
+                                    
+                                    # Verify all changes have the same value
+                                    all_same = True
+                                    for change in patch.changes[1:]:
+                                        if change.size != first_change.size:
+                                            all_same = False
+                                            break
+                                        change_addr = self._offset_to_rva(change.offset, binary)
+                                        change_value = int.from_bytes(
+                                            binary.get_data(change_addr, change.size), byteorder="little"
+                                        )
+                                        if change_value != current:
+                                            all_same = False
+                                            break
+                                    
+                                    if all_same:
+                                        value_widget.setText(str(current))
+                                    else:
+                                        # Values differ, show first one with a note
+                                        value_widget.setText(str(current))
+                                        value_widget.setToolTip(
+                                            f"Note: Current values differ across {len(patch.changes)} locations. "
+                                            f"Entering a value will apply it to all locations."
+                                        )
                                 except Exception as e:
                                     QMessageBox.warning(
                                         self, "Warning", f"Failed to read current value: {e}"
                                     )
                     else:
-                        value_widget.setPlaceholderText(f"Load {binary_name} first")
+                        if len(patch.changes) > 1:
+                            value_widget.setPlaceholderText(
+                                f"Load {binary_name} first (will apply to {len(patch.changes)} locations)"
+                            )
+                        else:
+                            value_widget.setPlaceholderText(f"Load {binary_name} first")
 
                     patch_layout.addWidget(value_widget)
+                    
+                    # Show number of locations and formulas if multiple changes or formulas exist
+                    has_formulas = any(c.formula for c in patch.changes)
+                    if len(patch.changes) > 1 or has_formulas:
+                        location_parts = []
+                        for i, c in enumerate(patch.changes):
+                            part = f"{c.offset:#x}"
+                            if c.formula:
+                                part += f" ({c.formula})"
+                            location_parts.append(part)
+                        
+                        if len(patch.changes) > 1:
+                            locations_text = f"Applies to {len(patch.changes)} location(s): " + ", ".join(location_parts)
+                        else:
+                            locations_text = f"Offset {location_parts[0]}"
+                        
+                        locations_label = QLabel(locations_text)
+                        locations_label.setStyleSheet("color: gray; font-size: 9pt;")
+                        locations_label.setWordWrap(True)
+                        patch_layout.addWidget(locations_label)
+                    
                     patch.widget = value_widget
                 else:
                     value_widget = QCheckBox("Enable")
@@ -575,7 +747,10 @@ class MainWindow(QMainWindow):
                     patch_layout.addWidget(status_label)
 
                 patch_group.setLayout(patch_layout)
-                self.patches_layout.addWidget(patch_group)
+                # Add to grid: row = idx // 2, column = idx % 2
+                row = idx // 2
+                col = idx % 2
+                self.patches_layout.addWidget(patch_group, row, col)
                 self.patches[patch.name] = patch
             except Exception as e:
                 QMessageBox.warning(
@@ -583,7 +758,6 @@ class MainWindow(QMainWindow):
                 )
                 continue
 
-        self.patches_layout.addStretch()
         self.update_patch_button_state()
 
     def update_binary_ui(self, files: Dict[str, BinaryFile]):
@@ -694,7 +868,9 @@ class MainWindow(QMainWindow):
             }
         """)
         self.patches_widget = QWidget()
-        self.patches_layout = QVBoxLayout(self.patches_widget)
+        self.patches_layout = QGridLayout(self.patches_widget)
+        self.patches_layout.setColumnStretch(0, 1)
+        self.patches_layout.setColumnStretch(1, 1)
         scroll.setWidget(self.patches_widget)
         patches_layout.addWidget(scroll)
         patches_group.setLayout(patches_layout)
