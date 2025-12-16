@@ -156,6 +156,8 @@ class MainWindow(QMainWindow):
         try:
             # Extract paths from binary_files
             binary_paths = {name: path for name, (path, _) in self.binary_files.items()}
+            # Merge with saved_binary_paths to preserve paths that aren't currently loaded
+            binary_paths = {**self.saved_binary_paths, **binary_paths}
 
             settings = Settings(
                 binary_paths=binary_paths,
@@ -164,6 +166,9 @@ class MainWindow(QMainWindow):
 
             with open(self.settings_file, "w") as f:
                 yaml.dump(settings.model_dump(exclude_none=True), f)
+            
+            # Update saved_binary_paths to match what we just saved
+            self.saved_binary_paths = binary_paths
         except Exception as e:
             QMessageBox.warning(self, "Warning", f"Failed to save settings: {e}")
 
