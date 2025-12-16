@@ -73,9 +73,21 @@ jobs:
           name: pfpatch-linux
           path: release-artifacts
 
-      - name: Extract tag name
+      - name: Extract tag name and version
         id: tag
-        run: echo "TAG_NAME=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+        run: |
+          TAG_NAME=${GITHUB_REF#refs/tags/}
+          VERSION=${TAG_NAME#v}
+          echo "TAG_NAME=$TAG_NAME" >> $GITHUB_OUTPUT
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Rename Windows artifact
+        run: |
+          mv release-artifacts/pfpatch.exe "release-artifacts/pfpatch-v${{ steps.tag.outputs.VERSION }}-windows.exe"
+
+      - name: Rename Linux artifact
+        run: |
+          mv release-artifacts/pfpatch "release-artifacts/pfpatch-v${{ steps.tag.outputs.VERSION }}-linux"
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
@@ -83,8 +95,8 @@ jobs:
           tag_name: ${{ steps.tag.outputs.TAG_NAME }}
           name: Release ${{ steps.tag.outputs.TAG_NAME }}
           files: |
-            release-artifacts/pfpatch.exe
-            release-artifacts/pfpatch
+            release-artifacts/pfpatch-v${{ steps.tag.outputs.VERSION }}-windows.exe
+            release-artifacts/pfpatch-v${{ steps.tag.outputs.VERSION }}-linux
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
