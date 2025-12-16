@@ -1,9 +1,9 @@
-name: Build Executables
+name: Create Release
 
 on:
   push:
-    branches: [main]
-  workflow_dispatch:
+    tags:
+      - 'v*'
 
 jobs:
   build:
@@ -13,10 +13,10 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v4
         with:
           enable-cache: true
 
@@ -51,3 +51,41 @@ jobs:
           name: pfpatch-linux
           path: dist/pfpatch
           retention-days: 30
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: pfpatch-windows
+          path: release-artifacts
+
+      - name: Download Linux artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: pfpatch-linux
+          path: release-artifacts
+
+      - name: Extract tag name
+        id: tag
+        run: echo "TAG_NAME=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.tag.outputs.TAG_NAME }}
+          name: Release ${{ steps.tag.outputs.TAG_NAME }}
+          files: |
+            release-artifacts/pfpatch.exe
+            release-artifacts/pfpatch
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+

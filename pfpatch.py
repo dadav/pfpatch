@@ -5,6 +5,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple, Union
 from pydantic import BaseModel, Field, field_validator
 
+__version__ = "0.1.0"
+
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -164,7 +166,7 @@ class MainWindow(QMainWindow):
 
         self.current_config: Optional[Config] = None
 
-        self.setWindowTitle("Private Files Patcher")
+        self.setWindowTitle(f"Private Files Patcher v{__version__}")
         self.setMinimumSize(800, 600)
 
         self.init_ui()
@@ -891,8 +893,6 @@ class MainWindow(QMainWindow):
         """Initialize the user interface"""
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-
-        self.setWindowTitle("pfpatch")
 
         main_layout = QVBoxLayout(central_widget)
 
