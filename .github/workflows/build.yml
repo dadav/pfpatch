@@ -1,0 +1,53 @@
+name: Build Executables
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Install uv
+      uses: astral-sh/setup-uv@v3
+      with:
+        enable-cache: true
+    
+    - name: Set up Python
+      run: uv python install 3.12
+    
+    - name: Install dependencies (including dev)
+      run: uv sync --all-extras --dev
+    
+    - name: Build with PyInstaller (Windows)
+      if: matrix.os == 'windows-latest'
+      run: |
+        uv run pyinstaller --onefile --noconsole --name pfpatch --add-data "patches;patches" --hidden-import pefile --hidden-import yaml --hidden-import PyQt6 --hidden-import PyQt6.QtCore --hidden-import PyQt6.QtWidgets --hidden-import PyQt6.QtGui pfpatch.py
+    
+    - name: Build with PyInstaller (Linux)
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        uv run pyinstaller --onefile --noconsole --name pfpatch --add-data "patches:patches" --hidden-import pefile --hidden-import yaml --hidden-import PyQt6 --hidden-import PyQt6.QtCore --hidden-import PyQt6.QtWidgets --hidden-import PyQt6.QtGui pfpatch.py
+    
+    - name: Upload artifact (Windows)
+      if: matrix.os == 'windows-latest'
+      uses: actions/upload-artifact@v3
+      with:
+        name: pfpatch-windows
+        path: dist/pfpatch.exe
+        retention-days: 30
+    
+    - name: Upload artifact (Linux)
+      if: matrix.os == 'ubuntu-latest'
+      uses: actions/upload-artifact@v3
+      with:
+        name: pfpatch-linux
+        path: dist/pfpatch
+        retention-days: 30

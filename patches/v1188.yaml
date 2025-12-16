@@ -2,21 +2,98 @@
 files:
   gameserver:
     default: SR_Gameserver.exe
+  gateway:
+    default: GatewayServer.exe
 
 patches:
-  # - name: Party mobs member count
-  #   description: |
-  #     How many players need to be in a party for party monster to spawn.
-  #   editable: true
-  #   file: gameserver
-  #   changes:
-  #     - offset: 0x00558F24
-  #       size: 1
-  - name: Foo
+  - name: Max job level
     description: |
-      bar
+      Adjust the max job level.
+    editable: true
+    file: gameserver
+    changes:
+      - offset: 0x60de6c
+        size: 1
+  - name: Level cap
+    description: |
+      The max level on this server.
+    editable: true
+    file: gameserver
+    changes:
+      - offset: 0x4d641e
+        size: 1
+      - offset: 0x4e52c9
+        size: 1
+  - name: Fix gameserver crash after level 110
+    description: |
+      After level 110 the gameserver crashes sometimes. This fixes it.
     editable: false
     file: gameserver
     changes:
+      - offset: 0x4e5475
+        value: "E0"
+  - name: Max mastery level
+    description: |
+      The max mastery level on this server.
+    editable: true
+    file: gameserver
+    changes:
+      - offset: 0x59c5e7
+        size: 2
+  - name: Party mobs spawn probability
+    description: |
+      How often a mob should spawn as party type (in %).
+    editable: true
+    file: gameserver
+    changes:
+      - offset: 0x5608e4
+        size: 1
+  - name: Party mobs member requirement
+    description: |
+      How many players need to be in a party for party monster to spawn.
+    editable: true
+    file: gameserver
+    changes:
       - offset: 0x00558F24
-        value: "02"
+        size: 1
+  - name: Gameserver spawn limit
+    description: |
+      How many mobs can spawn.
+    editable: true
+    file: gameserver
+    changes:
+      - offset: 0x54d60a
+        size: 4
+      - offset: 0x54d61f
+        size: 4
+      - offset: 0x54d655
+        size: 4
+      - offset: 0x54d664
+        size: 4
+      - offset: 0x54d6da
+        size: 4
+        formula: "value * 0x1D0"
+  - name: Disable Quest:RaiseEvent errors
+    description: |
+      Removes the Quest:RaiseEvent errors to reduce load.
+    editable: false
+    file: gameserver
+    changes:
+      - offset: 0x005805C8
+        value: "90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90"
+  - name: Disable green book
+    description: |
+      Removes the green book from the gameserver.
+    editable: false
+    file: gameserver
+    changes:
+      - offset: 0x004142E2
+        value: "90 90"
+  - name: Disable login captcha
+    description: |
+      Removes the login captcha.
+    editable: false
+    file: gateway
+    changes:
+      - offset: 0x40509d
+        value: "30 6e 40"
