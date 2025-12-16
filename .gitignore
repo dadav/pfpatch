@@ -11,3 +11,4 @@ wheels/
 *.exe
 backups
 settings.yml
+*.spec

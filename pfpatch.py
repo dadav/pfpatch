@@ -1,7 +1,6 @@
 import sys
 import yaml
 import pefile
-import operator
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple, Union
 from pydantic import BaseModel, Field, field_validator
@@ -32,7 +31,9 @@ class PatchChange(BaseModel):
     offset: int
     value: Optional[str] = None
     size: Optional[int] = None
-    formula: Optional[str] = None  # Formula/expression for editable patches (e.g., "value * 0x10", "value + 5")
+    formula: Optional[str] = (
+        None  # Formula/expression for editable patches (e.g., "value * 0x10", "value + 5")
+    )
 
     @field_validator("value")
     @classmethod
@@ -56,7 +57,7 @@ class PatchChange(BaseModel):
         if not v:
             return None
         # Basic syntax check - must contain 'value' variable
-        if 'value' not in v:
+        if "value" not in v:
             raise ValueError("Formula must contain 'value' variable")
         return v
 
@@ -83,11 +84,9 @@ class Patch(BaseModel):
             sizes = []
             for i, change in enumerate(v):
                 if change.size is None:
-                    raise ValueError(
-                        f"Editable patch change {i} must specify size"
-                    )
+                    raise ValueError(f"Editable patch change {i} must specify size")
                 sizes.append(change.size)
-            
+
             # All changes should have the same size for consistency
             if len(set(sizes)) > 1:
                 raise ValueError(
@@ -147,9 +146,22 @@ class MainWindow(QMainWindow):
         self.saved_binary_paths: Dict[str, str] = {}
         self.patches: Dict[str, Patch] = {}
         self.config_dir: Optional[str] = None
-        self.backup_dir = Path("backups")
+
+        # Set backup directory - use executable directory for onefile, or current dir for script
+        if getattr(sys, "frozen", False):
+            # Running as compiled executable - use directory where exe is located
+            self.backup_dir = Path(sys.executable).parent / "backups"
+        else:
+            # Running as script - use current directory
+            self.backup_dir = Path("backups")
         self.backup_dir.mkdir(exist_ok=True)
-        self.settings_file = Path("settings.yml")
+
+        # Set settings file location - same logic as backup dir
+        if getattr(sys, "frozen", False):
+            self.settings_file = Path(sys.executable).parent / "settings.yml"
+        else:
+            self.settings_file = Path("settings.yml")
+
         self.current_config: Optional[Config] = None
 
         self.setWindowTitle("Private Files Patcher")
@@ -158,14 +170,25 @@ class MainWindow(QMainWindow):
         self.init_ui()
         self.load_settings()
         self.load_defaults()
-    
+
+    def _get_resource_path(self, relative_path: str) -> Path:
+        """Get resource path that works with PyInstaller onefile mode"""
+        if getattr(sys, "frozen", False):
+            # Running as compiled executable (PyInstaller)
+            base_path = Path(sys._MEIPASS)
+        else:
+            # Running as script
+            base_path = Path(__file__).parent
+
+        return base_path / relative_path
+
     def _offset_to_rva(self, offset: int, binary: pefile.PE) -> int:
         """Convert virtual address offset to RVA (Relative Virtual Address)"""
         return offset - binary.OPTIONAL_HEADER.ImageBase
-    
+
     def _evaluate_formula(self, formula: Optional[str], value: int) -> int:
         """Safely evaluate a formula expression with the given value
-        
+
         Supports standard Python math operations: +, -, *, /, //, %, **
         Supports bitwise operations: &, |, ^, <<, >>
         Supports functions: abs, min, max, pow, round
@@ -173,7 +196,7 @@ class MainWindow(QMainWindow):
         """
         if formula is None or not formula.strip():
             return value
-        
+
         # Create a safe evaluation context
         # Only allow specific builtins and math operations
         safe_builtins = {
@@ -185,20 +208,22 @@ class MainWindow(QMainWindow):
             "int": int,
             "float": float,
         }
-        
+
         safe_dict = {
             "value": value,
             "__builtins__": safe_builtins,
         }
-        
+
         try:
             # Compile and evaluate the expression
             # This allows standard Python operators (+, -, *, /, etc.)
             code = compile(formula, "<formula>", "eval")
             result = eval(code, safe_dict, {})
-            
+
             if not isinstance(result, (int, float)):
-                raise ValueError(f"Formula must evaluate to a number, got {type(result)}")
+                raise ValueError(
+                    f"Formula must evaluate to a number, got {type(result)}"
+                )
             return int(result)
         except NameError as e:
             raise ValueError(f"Invalid variable in formula: {e}")
@@ -208,7 +233,7 @@ class MainWindow(QMainWindow):
             raise ValueError(f"Division by zero in formula: {e}")
         except Exception as e:
             raise ValueError(f"Error evaluating formula '{formula}': {e}")
-    
+
     def _close_binary(self, binary_name: str) -> None:
         """Close and remove a binary file from memory"""
         if binary_name in self.binary_files:
@@ -235,7 +260,9 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Warning", f"Failed to load settings: {e}")
                 self.config_dir = None
             except Exception as e:
-                QMessageBox.warning(self, "Warning", f"Unexpected error loading settings: {e}")
+                QMessageBox.warning(
+                    self, "Warning", f"Unexpected error loading settings: {e}"
+                )
                 self.config_dir = None
         else:
             self.config_dir = None
@@ -254,21 +281,30 @@ class MainWindow(QMainWindow):
             )
 
             with open(self.settings_file, "w", encoding="utf-8") as f:
-                yaml.dump(settings.model_dump(exclude_none=True), f, default_flow_style=False)
-            
+                yaml.dump(
+                    settings.model_dump(exclude_none=True), f, default_flow_style=False
+                )
+
             # Update saved_binary_paths to match what we just saved
             self.saved_binary_paths = binary_paths
         except (IOError, OSError, yaml.YAMLError) as e:
             QMessageBox.warning(self, "Warning", f"Failed to save settings: {e}")
         except Exception as e:
-            QMessageBox.warning(self, "Warning", f"Unexpected error saving settings: {e}")
+            QMessageBox.warning(
+                self, "Warning", f"Unexpected error saving settings: {e}"
+            )
 
     def load_defaults(self) -> None:
         """Load default configuration directory"""
         if self.config_dir and Path(self.config_dir).exists():
             self.select_config_dir(self.config_dir)
         else:
-            default_path = Path("patches")
+            # Try resource path first (for PyInstaller), then current directory
+            default_path = self._get_resource_path("patches")
+            if not default_path.exists():
+                # Fallback to current directory
+                default_path = Path("patches")
+
             if default_path.exists():
                 self.select_config_dir(str(default_path))
 
@@ -307,7 +343,9 @@ class MainWindow(QMainWindow):
                 )
             except Exception as e:
                 QMessageBox.warning(
-                    self, "Warning", f"Failed to read original bytes at offset {change.offset:#x}: {e}"
+                    self,
+                    "Warning",
+                    f"Failed to read original bytes at offset {change.offset:#x}: {e}",
                 )
                 return
 
@@ -380,7 +418,9 @@ class MainWindow(QMainWindow):
                         # Get size from first change (all should have same size per validation)
                         if not patch.changes or patch.changes[0].size is None:
                             QMessageBox.warning(
-                                self, "Error", f"Patch {patch_name} has no size specified"
+                                self,
+                                "Error",
+                                f"Patch {patch_name} has no size specified",
                             )
                             continue
                         size = patch.changes[0].size
@@ -390,52 +430,61 @@ class MainWindow(QMainWindow):
                         for change in patch.changes:
                             if change.size != size:
                                 QMessageBox.warning(
-                                    self, "Error", 
-                                    f"Patch {patch_name} has inconsistent sizes"
+                                    self,
+                                    "Error",
+                                    f"Patch {patch_name} has inconsistent sizes",
                                 )
                                 success = False
                                 break
-                            
+
                             # Calculate final value using formula if specified, otherwise use value as-is
                             try:
-                                final_value_int = self._evaluate_formula(change.formula, new_value_int)
+                                final_value_int = self._evaluate_formula(
+                                    change.formula, new_value_int
+                                )
                             except ValueError as e:
                                 QMessageBox.warning(
-                                    self, "Error",
-                                    f"Invalid formula at offset {change.offset:#x}: {e}"
+                                    self,
+                                    "Error",
+                                    f"Invalid formula at offset {change.offset:#x}: {e}",
                                 )
                                 success = False
                                 break
-                            
+
                             # Check for overflow based on size
                             max_value = (1 << (size * 8)) - 1
                             if final_value_int > max_value:
                                 QMessageBox.warning(
-                                    self, "Error",
-                                    f"Value {final_value_int} exceeds maximum for {size} byte(s) at offset {change.offset:#x}"
+                                    self,
+                                    "Error",
+                                    f"Value {final_value_int} exceeds maximum for {size} byte(s) at offset {change.offset:#x}",
                                 )
                                 success = False
                                 break
                             if final_value_int < 0:
                                 QMessageBox.warning(
-                                    self, "Error",
-                                    f"Value {final_value_int} is negative at offset {change.offset:#x}"
+                                    self,
+                                    "Error",
+                                    f"Value {final_value_int} is negative at offset {change.offset:#x}",
                                 )
                                 success = False
                                 break
-                            
+
                             try:
-                                final_value = final_value_int.to_bytes(size, byteorder="little")
+                                final_value = final_value_int.to_bytes(
+                                    size, byteorder="little"
+                                )
                                 addr = self._offset_to_rva(change.offset, binary)
                                 binary.set_bytes_at_rva(addr, final_value)
                             except Exception as e:
                                 QMessageBox.warning(
-                                    self, "Error",
-                                    f"Failed to apply patch at offset {change.offset:#x}: {e}"
+                                    self,
+                                    "Error",
+                                    f"Failed to apply patch at offset {change.offset:#x}: {e}",
                                 )
                                 success = False
                                 break
-                        
+
                         if success:
                             modified_binaries.add(binary_name)
                     except ValueError as e:
@@ -445,7 +494,9 @@ class MainWindow(QMainWindow):
                         continue
                     except Exception as e:
                         QMessageBox.warning(
-                            self, "Error", f"Failed to apply patch {patch_name}: {str(e)}"
+                            self,
+                            "Error",
+                            f"Failed to apply patch {patch_name}: {str(e)}",
                         )
                         continue
                 else:
@@ -484,16 +535,20 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to apply patches: {e}")
 
-    def select_binary(self, name: str, result_object: QLineEdit, default: Optional[str] = None) -> None:
+    def select_binary(
+        self, name: str, result_object: QLineEdit, default: Optional[str] = None
+    ) -> None:
         """Select and load a binary file"""
         selected_file, _ = QFileDialog.getOpenFileName(
-            self, f"Select {name} binary", filter="All Files (*)", initialFilter=default
+            self,
+            f"Select {name} binary",
+            filter=f"Default ({default if default else name});;All Files (*)",
         )
 
         if selected_file:
             # Close existing binary if any
             self._close_binary(name)
-            
+
             try:
                 binary = pefile.PE(selected_file, fast_load=True)
                 self.binary_files[name] = (selected_file, binary)
@@ -542,7 +597,9 @@ class MainWindow(QMainWindow):
             return
 
         if not config_path.is_dir():
-            QMessageBox.warning(self, "Warning", f"Path is not a directory: {selected_path}")
+            QMessageBox.warning(
+                self, "Warning", f"Path is not a directory: {selected_path}"
+            )
             return
 
         self.config_dir = str(config_path)
@@ -553,9 +610,7 @@ class MainWindow(QMainWindow):
 
         config_files = list(config_path.glob("*.y?ml"))
         if not config_files:
-            QMessageBox.warning(
-                self, "Warning", "No config files found in directory!"
-            )
+            QMessageBox.warning(self, "Warning", "No config files found in directory!")
             return
 
         for config in sorted(config_files):
@@ -567,7 +622,7 @@ class MainWindow(QMainWindow):
         self.clear_layout(self.patches_layout)
         self.patches.clear()
         self.clear_layout(self.files_layout)
-        
+
         # Close all binary files before clearing
         for binary_name in list(self.binary_files.keys()):
             self._close_binary(binary_name)
@@ -584,7 +639,9 @@ class MainWindow(QMainWindow):
 
         config_path = Path(config_data)
         if not config_path.exists():
-            QMessageBox.critical(self, "Error", f"Config file does not exist: {config_path}")
+            QMessageBox.critical(
+                self, "Error", f"Config file does not exist: {config_path}"
+            )
             return
 
         try:
@@ -603,13 +660,17 @@ class MainWindow(QMainWindow):
         except (IOError, OSError) as e:
             QMessageBox.critical(self, "Error", f"Failed to read config file: {str(e)}")
         except yaml.YAMLError as e:
-            QMessageBox.critical(self, "Error", f"Invalid YAML in config file: {str(e)}")
+            QMessageBox.critical(
+                self, "Error", f"Invalid YAML in config file: {str(e)}"
+            )
         except (ValueError, KeyError) as e:
             QMessageBox.critical(self, "Error", f"Invalid config format: {str(e)}")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load config: {str(e)}")
 
-    def clear_layout(self, layout: Union[QVBoxLayout, QHBoxLayout, QGridLayout]) -> None:
+    def clear_layout(
+        self, layout: Union[QVBoxLayout, QHBoxLayout, QGridLayout]
+    ) -> None:
         """Recursively clear all widgets from a layout"""
         while layout.count():
             item = layout.takeAt(0)
@@ -649,25 +710,31 @@ class MainWindow(QMainWindow):
                             first_change = patch.changes[0]
                             if first_change.size is not None:
                                 try:
-                                    addr = self._offset_to_rva(first_change.offset, binary)
-                                    current = int.from_bytes(
-                                        binary.get_data(addr, first_change.size), byteorder="little"
+                                    addr = self._offset_to_rva(
+                                        first_change.offset, binary
                                     )
-                                    
+                                    current = int.from_bytes(
+                                        binary.get_data(addr, first_change.size),
+                                        byteorder="little",
+                                    )
+
                                     # Verify all changes have the same value
                                     all_same = True
                                     for change in patch.changes[1:]:
                                         if change.size != first_change.size:
                                             all_same = False
                                             break
-                                        change_addr = self._offset_to_rva(change.offset, binary)
+                                        change_addr = self._offset_to_rva(
+                                            change.offset, binary
+                                        )
                                         change_value = int.from_bytes(
-                                            binary.get_data(change_addr, change.size), byteorder="little"
+                                            binary.get_data(change_addr, change.size),
+                                            byteorder="little",
                                         )
                                         if change_value != current:
                                             all_same = False
                                             break
-                                    
+
                                     if all_same:
                                         value_widget.setText(str(current))
                                     else:
@@ -679,7 +746,9 @@ class MainWindow(QMainWindow):
                                         )
                                 except Exception as e:
                                     QMessageBox.warning(
-                                        self, "Warning", f"Failed to read current value: {e}"
+                                        self,
+                                        "Warning",
+                                        f"Failed to read current value: {e}",
                                     )
                     else:
                         if len(patch.changes) > 1:
@@ -690,7 +759,7 @@ class MainWindow(QMainWindow):
                             value_widget.setPlaceholderText(f"Load {binary_name} first")
 
                     patch_layout.addWidget(value_widget)
-                    
+
                     # Show number of locations and formulas if multiple changes or formulas exist
                     has_formulas = any(c.formula for c in patch.changes)
                     if len(patch.changes) > 1 or has_formulas:
@@ -700,17 +769,20 @@ class MainWindow(QMainWindow):
                             if c.formula:
                                 part += f" ({c.formula})"
                             location_parts.append(part)
-                        
+
                         if len(patch.changes) > 1:
-                            locations_text = f"Applies to {len(patch.changes)} location(s): " + ", ".join(location_parts)
+                            locations_text = (
+                                f"Applies to {len(patch.changes)} location(s): "
+                                + ", ".join(location_parts)
+                            )
                         else:
                             locations_text = f"Offset {location_parts[0]}"
-                        
+
                         locations_label = QLabel(locations_text)
                         locations_label.setStyleSheet("color: gray; font-size: 9pt;")
                         locations_label.setWordWrap(True)
                         patch_layout.addWidget(locations_label)
-                    
+
                     patch.widget = value_widget
                 else:
                     value_widget = QCheckBox("Enable")
@@ -784,7 +856,7 @@ class MainWindow(QMainWindow):
                     except pefile.PEFormatError:
                         # File exists but is not a valid PE file - silently fail
                         file_txt.setText("<empty>")
-                    except (IOError, OSError) as e:
+                    except (IOError, OSError):
                         # File access error - show warning but not critical
                         file_txt.setText("<empty>")
                     except Exception as e:
