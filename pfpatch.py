@@ -299,13 +299,12 @@ class MainWindow(QMainWindow):
                 binary_name = patch["file"]
                 
                 patch_group = QGroupBox(patch.get("name", "Unnamed Patch"))
+                
+                # Set description as tooltip if available
+                if "description" in patch:
+                    patch_group.setToolTip(patch["description"])
 
                 patch_layout = QVBoxLayout()
-                if "description" in patch:
-                    desc_label = QLabel(patch["description"])
-                    desc_label.setWordWrap(True)
-                    desc_label.setStyleSheet("color: gray;")
-                    patch_layout.addWidget(desc_label)
 
                 # Check if the required binary is loaded
                 binary_loaded = binary_name in self.binary_files
