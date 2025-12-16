@@ -4,19 +4,19 @@ files:
     default: SR_Gameserver.exe
 
 patches:
-  # - name: Party mobs member count
-  #   description: |
-  #     How many players need to be in a party for party monster to spawn.
-  #   editable: true
-  #   file: gameserver
-  #   changes:
-  #     - offset: 0x00558F24
-  #       size: 1
-  - name: Foo
+  - name: Party mobs member requirement
     description: |
-      bar
-    editable: false
+      How many players need to be in a party for party monster to spawn.
+    editable: true
     file: gameserver
     changes:
       - offset: 0x00558F24
-        value: "02"
+        size: 1
+  - name: Disable green book
+    description: |
+      Removes the green book from the gameserver.
+    editable: false
+    file: gameserver
+    changes:
+      - offset: 0x004142E2
+        value: "90 90"
