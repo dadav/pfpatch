@@ -2,7 +2,7 @@ import sys
 import yaml
 import pefile
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple, Union
 from pydantic import BaseModel, Field, field_validator
 
 from PyQt6.QtWidgets import (
@@ -114,13 +114,13 @@ class Settings(BaseModel):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
 
-        self.binary_files = dict()
-        self.saved_binary_paths = dict()
-        self.patches = dict()
-        self.config_dir = None
+        self.binary_files: Dict[str, Tuple[str, pefile.PE]] = {}
+        self.saved_binary_paths: Dict[str, str] = {}
+        self.patches: Dict[str, Patch] = {}
+        self.config_dir: Optional[str] = None
         self.backup_dir = Path("backups")
         self.backup_dir.mkdir(exist_ok=True)
         self.settings_file = Path("settings.yml")
@@ -132,26 +132,43 @@ class MainWindow(QMainWindow):
         self.init_ui()
         self.load_settings()
         self.load_defaults()
+    
+    def _offset_to_rva(self, offset: int, binary: pefile.PE) -> int:
+        """Convert virtual address offset to RVA (Relative Virtual Address)"""
+        return offset - binary.OPTIONAL_HEADER.ImageBase
+    
+    def _close_binary(self, binary_name: str) -> None:
+        """Close and remove a binary file from memory"""
+        if binary_name in self.binary_files:
+            _, binary = self.binary_files[binary_name]
+            try:
+                binary.close()
+            except Exception:
+                pass  # Ignore errors when closing
+            del self.binary_files[binary_name]
 
-    def load_settings(self):
+    def load_settings(self) -> None:
         """Load saved binary paths and config directory from settings file"""
         if self.settings_file.exists():
             try:
-                with open(self.settings_file, "r") as f:
+                with open(self.settings_file, "r", encoding="utf-8") as f:
                     data = yaml.safe_load(f)
                     if data:
                         settings = Settings(**data)
-                        self.saved_binary_paths = settings.binary_paths
+                        self.saved_binary_paths = settings.binary_paths or {}
                         self.config_dir = settings.config_dir
                     else:
                         self.config_dir = None
-            except Exception as e:
+            except (yaml.YAMLError, ValueError, KeyError) as e:
                 QMessageBox.warning(self, "Warning", f"Failed to load settings: {e}")
+                self.config_dir = None
+            except Exception as e:
+                QMessageBox.warning(self, "Warning", f"Unexpected error loading settings: {e}")
                 self.config_dir = None
         else:
             self.config_dir = None
 
-    def save_settings(self):
+    def save_settings(self) -> None:
         """Save binary paths and config directory to settings file"""
         try:
             # Extract paths from binary_files
@@ -164,30 +181,35 @@ class MainWindow(QMainWindow):
                 config_dir=self.config_dir,
             )
 
-            with open(self.settings_file, "w") as f:
-                yaml.dump(settings.model_dump(exclude_none=True), f)
+            with open(self.settings_file, "w", encoding="utf-8") as f:
+                yaml.dump(settings.model_dump(exclude_none=True), f, default_flow_style=False)
             
             # Update saved_binary_paths to match what we just saved
             self.saved_binary_paths = binary_paths
-        except Exception as e:
+        except (IOError, OSError, yaml.YAMLError) as e:
             QMessageBox.warning(self, "Warning", f"Failed to save settings: {e}")
+        except Exception as e:
+            QMessageBox.warning(self, "Warning", f"Unexpected error saving settings: {e}")
 
-    def load_defaults(self):
+    def load_defaults(self) -> None:
+        """Load default configuration directory"""
         if self.config_dir and Path(self.config_dir).exists():
             self.select_config_dir(self.config_dir)
         else:
-            self.select_config_dir("patches")
+            default_path = Path("patches")
+            if default_path.exists():
+                self.select_config_dir(str(default_path))
 
-    def get_backup_path(self, binary_name):
+    def get_backup_path(self, binary_name: str) -> Path:
         """Generate backup file path for a binary"""
         return self.backup_dir / f"{binary_name}_backup.yaml"
 
-    def is_binary_patched(self, binary_name):
+    def is_binary_patched(self, binary_name: str) -> bool:
         """Check if binary has been patched (backup exists)"""
         backup_path = self.get_backup_path(binary_name)
         return backup_path.exists()
 
-    def save_original_bytes(self, binary_name, patch: Patch):
+    def save_original_bytes(self, binary_name: str, patch: Patch) -> None:
         """Save original bytes before first patch"""
         # Only save if binary hasn't been patched before
         if self.is_binary_patched(binary_name):
@@ -198,21 +220,32 @@ class MainWindow(QMainWindow):
 
         original_data = []
         for change in patch.changes:
-            addr = change.offset - binary.OPTIONAL_HEADER.ImageBase
+            addr = self._offset_to_rva(change.offset, binary)
             size = (
                 len(bytes.fromhex(change.value))
                 if change.value is not None
                 else change.size
             )
-            original_bytes = binary.get_data(addr, size)
-            original_data.append(
-                {"offset": change.offset, "value": original_bytes.hex()}
-            )
+            if size is None:
+                continue
+            try:
+                original_bytes = binary.get_data(addr, size)
+                original_data.append(
+                    {"offset": change.offset, "value": original_bytes.hex()}
+                )
+            except Exception as e:
+                QMessageBox.warning(
+                    self, "Warning", f"Failed to read original bytes at offset {change.offset:#x}: {e}"
+                )
+                return
 
-        with open(backup_path, "w") as f:
-            yaml.dump(original_data, f)
+        try:
+            with open(backup_path, "w", encoding="utf-8") as f:
+                yaml.dump(original_data, f, default_flow_style=False)
+        except (IOError, OSError, yaml.YAMLError) as e:
+            QMessageBox.warning(self, "Warning", f"Failed to save backup: {e}")
 
-    def restore_original_bytes(self, binary_name, patch: Patch):
+    def restore_original_bytes(self, binary_name: str, patch: Patch) -> bool:
         """Restore original bytes from backup"""
         backup_path = self.get_backup_path(binary_name)
 
@@ -224,18 +257,27 @@ class MainWindow(QMainWindow):
 
         _, binary = self.binary_files[binary_name]
 
-        # Load original bytes
-        with open(backup_path, "r") as f:
-            original_data = yaml.safe_load(f)
+        try:
+            # Load original bytes
+            with open(backup_path, "r", encoding="utf-8") as f:
+                original_data = yaml.safe_load(f)
 
-        # Restore original bytes
-        for change in original_data:
-            addr = change["offset"] - binary.OPTIONAL_HEADER.ImageBase
-            binary.set_bytes_at_rva(addr, bytes.fromhex(change["value"]))
+            if not original_data:
+                QMessageBox.warning(self, "Warning", "Backup file is empty!")
+                return False
 
-        return True
+            # Restore original bytes
+            for change in original_data:
+                addr = self._offset_to_rva(change["offset"], binary)
+                binary.set_bytes_at_rva(addr, bytes.fromhex(change["value"]))
 
-    def apply_patches(self):
+            return True
+        except (IOError, OSError, yaml.YAMLError, KeyError, ValueError) as e:
+            QMessageBox.warning(self, "Warning", f"Failed to restore backup: {e}")
+            return False
+
+    def apply_patches(self) -> None:
+        """Apply all enabled patches to their respective binaries"""
         try:
             modified_binaries = set()
 
@@ -256,14 +298,22 @@ class MainWindow(QMainWindow):
                     try:
                         new_value_text = patch.widget.text().strip()
                         if not new_value_text:
+                            # If empty, try to restore original if backup exists
+                            if self.is_binary_patched(binary_name):
+                                if self.restore_original_bytes(binary_name, patch):
+                                    modified_binaries.add(binary_name)
                             continue
 
                         new_value_int = int(new_value_text)
                         change = patch.changes[0]
-                        size = change.size
-                        new_value = new_value_int.to_bytes(size, byteorder="little")
+                        if change.size is None:
+                            QMessageBox.warning(
+                                self, "Error", f"Patch {patch_name} has no size specified"
+                            )
+                            continue
+                        new_value = new_value_int.to_bytes(change.size, byteorder="little")
 
-                        addr = change.offset - binary.OPTIONAL_HEADER.ImageBase
+                        addr = self._offset_to_rva(change.offset, binary)
                         binary.set_bytes_at_rva(addr, new_value)
                         modified_binaries.add(binary_name)
                     except ValueError as e:
@@ -271,12 +321,19 @@ class MainWindow(QMainWindow):
                             self, "Error", f"Invalid value in {patch_name}: {str(e)}"
                         )
                         continue
+                    except Exception as e:
+                        QMessageBox.warning(
+                            self, "Error", f"Failed to apply patch {patch_name}: {str(e)}"
+                        )
+                        continue
                 else:
                     if patch.widget.isChecked():
                         self.save_original_bytes(binary_name, patch)
 
                         for change in patch.changes:
-                            addr = change.offset - binary.OPTIONAL_HEADER.ImageBase
+                            if change.value is None:
+                                continue
+                            addr = self._offset_to_rva(change.offset, binary)
                             binary.set_bytes_at_rva(addr, bytes.fromhex(change.value))
                         modified_binaries.add(binary_name)
                     else:
@@ -286,7 +343,13 @@ class MainWindow(QMainWindow):
             # Write all modified binaries
             for binary_name in modified_binaries:
                 binary_path, binary = self.binary_files[binary_name]
-                binary.write(binary_path)
+                try:
+                    binary.write(binary_path)
+                except (IOError, OSError, pefile.PEFormatError) as e:
+                    QMessageBox.critical(
+                        self, "Error", f"Failed to write binary {binary_name}: {e}"
+                    )
+                    return
 
             if modified_binaries:
                 QMessageBox.information(
@@ -299,17 +362,19 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to apply patches: {e}")
 
-    def select_binary(self, name, result_object: QLineEdit, default=None):
+    def select_binary(self, name: str, result_object: QLineEdit, default: Optional[str] = None) -> None:
+        """Select and load a binary file"""
         selected_file, _ = QFileDialog.getOpenFileName(
             self, f"Select {name} binary", filter="All Files (*)", initialFilter=default
         )
 
         if selected_file:
+            # Close existing binary if any
+            self._close_binary(name)
+            
             try:
-                self.binary_files[name] = (
-                    selected_file,
-                    pefile.PE(selected_file, fast_load=True),
-                )
+                binary = pefile.PE(selected_file, fast_load=True)
+                self.binary_files[name] = (selected_file, binary)
                 result_object.setText(selected_file)
 
                 self.save_settings()
@@ -317,62 +382,95 @@ class MainWindow(QMainWindow):
                     self.update_patches_ui(self.current_config.patches)
                 self.update_patch_button_state()
 
+            except pefile.PEFormatError as e:
+                QMessageBox.critical(self, "Error", f"Invalid PE file format: {str(e)}")
+                result_object.setText("<empty>")
+            except (IOError, OSError) as e:
+                QMessageBox.critical(self, "Error", f"Failed to open file: {str(e)}")
+                result_object.setText("<empty>")
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to load binary: {str(e)}")
                 result_object.setText("<empty>")
 
-    def update_patch_button_state(self):
+    def update_patch_button_state(self) -> None:
         """Enable patch button if at least one patch has its binary loaded"""
-        has_enabled_patch = False
-        for patch in self.patches.values():
-            if patch.widget.isEnabled():
-                has_enabled_patch = True
-                break
-
+        has_enabled_patch = any(
+            patch.widget.isEnabled() for patch in self.patches.values()
+        )
         self.patch_btn.setEnabled(has_enabled_patch)
 
-    def select_config_dir(self, value=None):
-        selected_path = value or QFileDialog.getExistingDirectory(
-            self, "Select config directory"
-        )
+    def select_config_dir(self, value: Optional[str] = None) -> None:
+        """Select configuration directory"""
+        if value:
+            selected_path = value
+        else:
+            selected_path = QFileDialog.getExistingDirectory(
+                self, "Select config directory"
+            )
 
-        if selected_path:
-            config_path = Path(selected_path)
-            if not config_path.exists():
-                return
+        if not selected_path:
+            return
 
-            self.config_dir = str(config_path)
-            self.save_settings()
-
-            self.config_files_cbox.clear()
-            self.clear_ui()
-
-            config_files = list(config_path.glob("*.y?ml"))
-            if not config_files:
+        config_path = Path(selected_path)
+        if not config_path.exists():
+            if value:  # Only show error if called programmatically
                 QMessageBox.warning(
-                    self, "Warning", "No config files found in directory!"
+                    self, "Warning", f"Directory does not exist: {selected_path}"
                 )
-                return
+            return
 
-            for config in config_files:
-                self.config_files_cbox.addItem(config.stem, str(config))
+        if not config_path.is_dir():
+            QMessageBox.warning(self, "Warning", f"Path is not a directory: {selected_path}")
+            return
 
-    def clear_ui(self):
+        self.config_dir = str(config_path)
+        self.save_settings()
+
+        self.config_files_cbox.clear()
+        self.clear_ui()
+
+        config_files = list(config_path.glob("*.y?ml"))
+        if not config_files:
+            QMessageBox.warning(
+                self, "Warning", "No config files found in directory!"
+            )
+            return
+
+        for config in sorted(config_files):
+            self.config_files_cbox.addItem(config.stem, str(config))
+
+    def clear_ui(self) -> None:
+        """Clear all UI elements and close loaded binaries"""
         self.patch_btn.setEnabled(False)
         self.clear_layout(self.patches_layout)
         self.patches.clear()
         self.clear_layout(self.files_layout)
-        self.binary_files.clear()
+        
+        # Close all binary files before clearing
+        for binary_name in list(self.binary_files.keys()):
+            self._close_binary(binary_name)
 
-    def config_changed(self, index):
+    def config_changed(self, index: int) -> None:
+        """Handle configuration file selection change"""
         if index == -1:
             return
 
-        config_path = Path(self.config_files_cbox.currentData())
+        config_data = self.config_files_cbox.currentData()
+        if not config_data:
+            QMessageBox.warning(self, "Warning", "No config file selected")
+            return
+
+        config_path = Path(config_data)
+        if not config_path.exists():
+            QMessageBox.critical(self, "Error", f"Config file does not exist: {config_path}")
+            return
 
         try:
-            with open(config_path, "r") as f:
+            with open(config_path, "r", encoding="utf-8") as f:
                 data = yaml.safe_load(f)
+                if not data:
+                    QMessageBox.critical(self, "Error", "Config file is empty")
+                    return
                 self.current_config = Config(**data)
 
             self.clear_ui()
@@ -380,10 +478,17 @@ class MainWindow(QMainWindow):
 
             # Show patches (disabled initially)
             self.update_patches_ui(self.current_config.patches)
+        except (IOError, OSError) as e:
+            QMessageBox.critical(self, "Error", f"Failed to read config file: {str(e)}")
+        except yaml.YAMLError as e:
+            QMessageBox.critical(self, "Error", f"Invalid YAML in config file: {str(e)}")
+        except (ValueError, KeyError) as e:
+            QMessageBox.critical(self, "Error", f"Invalid config format: {str(e)}")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load config: {str(e)}")
 
-    def clear_layout(self, layout):
+    def clear_layout(self, layout: Union[QVBoxLayout, QHBoxLayout]) -> None:
+        """Recursively clear all widgets from a layout"""
         while layout.count():
             item = layout.takeAt(0)
 
@@ -419,12 +524,17 @@ class MainWindow(QMainWindow):
                         _, binary = self.binary_files[binary_name]
                         if len(patch.changes) > 0:
                             change = patch.changes[0]
-                            addr = change.offset - binary.OPTIONAL_HEADER.ImageBase
-                            size = change.size
-                            current = int.from_bytes(
-                                binary.get_data(addr, size), byteorder="little"
-                            )
-                            value_widget.setText(str(current))
+                            if change.size is not None:
+                                try:
+                                    addr = self._offset_to_rva(change.offset, binary)
+                                    current = int.from_bytes(
+                                        binary.get_data(addr, change.size), byteorder="little"
+                                    )
+                                    value_widget.setText(str(current))
+                                except Exception as e:
+                                    QMessageBox.warning(
+                                        self, "Warning", f"Failed to read current value: {e}"
+                                    )
                     else:
                         value_widget.setPlaceholderText(f"Load {binary_name} first")
 
@@ -438,17 +548,23 @@ class MainWindow(QMainWindow):
                         _, binary = self.binary_files[binary_name]
                         # Check current state
                         all_match = True
-                        for change in patch.changes:
-                            addr = change.offset - binary.OPTIONAL_HEADER.ImageBase
-                            assert change.value is not None
-                            desired = bytes.fromhex(change.value)
-                            current = binary.get_data(addr, len(desired))
-                            if current != desired:
-                                all_match = False
-                                break
+                        try:
+                            for change in patch.changes:
+                                if change.value is None:
+                                    all_match = False
+                                    break
+                                addr = self._offset_to_rva(change.offset, binary)
+                                desired = bytes.fromhex(change.value)
+                                current = binary.get_data(addr, len(desired))
+                                if current != desired:
+                                    all_match = False
+                                    break
 
-                        if all_match:
-                            value_widget.setChecked(True)
+                            if all_match:
+                                value_widget.setChecked(True)
+                        except Exception:
+                            # If we can't read the bytes, assume not patched
+                            pass
 
                     patch_layout.addWidget(value_widget)
                     patch.widget = value_widget
@@ -488,14 +604,19 @@ class MainWindow(QMainWindow):
                 saved_path = self.saved_binary_paths[binary_name]
                 if Path(saved_path).exists():
                     try:
-                        self.binary_files[binary_name] = (
-                            saved_path,
-                            pefile.PE(saved_path, fast_load=True),
-                        )
+                        binary = pefile.PE(saved_path, fast_load=True)
+                        self.binary_files[binary_name] = (saved_path, binary)
                         file_txt.setText(saved_path)
+                    except pefile.PEFormatError:
+                        # File exists but is not a valid PE file - silently fail
+                        file_txt.setText("<empty>")
+                    except (IOError, OSError) as e:
+                        # File access error - show warning but not critical
+                        file_txt.setText("<empty>")
                     except Exception as e:
-                        QMessageBox.critical(
-                            self, "Error", f"Failed to load binary: {e}"
+                        # Other errors - show warning
+                        QMessageBox.warning(
+                            self, "Warning", f"Failed to load binary {binary_name}: {e}"
                         )
                         file_txt.setText("<empty>")
                 else:
@@ -520,7 +641,8 @@ class MainWindow(QMainWindow):
 
         self.files_layout.addStretch()
 
-    def init_ui(self):
+    def init_ui(self) -> None:
+        """Initialize the user interface"""
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
 
@@ -588,7 +710,8 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(self.patch_btn)
 
 
-def main():
+def main() -> None:
+    """Main entry point for the application"""
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     window = MainWindow()

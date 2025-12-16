@@ -2,8 +2,18 @@
 files:
   gameserver:
     default: SR_Gameserver.exe
+  gateway:
+    default: GatewayServer.exe
 
 patches:
+  - name: Party mobs spawn probability
+    description: |
+      How often a mob should spawn as party type (in %).
+    editable: true
+    file: gameserver
+    changes:
+      - offset: 0x5608e4
+        size: 1
   - name: Party mobs member requirement
     description: |
       How many players need to be in a party for party monster to spawn.
@@ -20,3 +30,11 @@ patches:
     changes:
       - offset: 0x004142E2
         value: "90 90"
+  - name: Disable login captcha
+    description: |
+      Removes the login captcha.
+    editable: false
+    file: gateway
+    changes:
+      - offset: 0x40509d
+        value: "30 6e 40"
