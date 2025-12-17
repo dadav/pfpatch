@@ -4,6 +4,8 @@ files:
     default: SR_Gameserver.exe
   gateway:
     default: GatewayServer.exe
+  sro_client:
+    default: sro_client.exe
 
 patches:
   - name: Max job level
@@ -40,6 +42,9 @@ patches:
     changes:
       - offset: 0x59c5e7
         size: 2
+      - offset: 0x006A51BC
+        size: 2
+        file: sro_client
   - name: Party mobs spawn probability
     description: |
       How often a mob should spawn as party type (in %).

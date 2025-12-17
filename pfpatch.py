@@ -365,15 +365,33 @@ class MainWindow(QMainWindow):
         self, binary_name: str, changes: List[PatchChange]
     ) -> None:
         """Save original bytes before first patch"""
-        # Only save if binary hasn't been patched before
-        if self.is_binary_patched(binary_name):
-            return
-
         backup_path = self.get_backup_path(binary_name)
         _, binary = self.binary_files[binary_name]
 
-        original_data = []
+        # Load existing backup data if it exists
+        existing_data = []
+        existing_offsets = set()
+        if backup_path.exists():
+            try:
+                with open(backup_path, "r", encoding="utf-8") as f:
+                    existing_data = yaml.safe_load(f) or []
+                    existing_offsets = {item["offset"] for item in existing_data if "offset" in item}
+            except (IOError, OSError, yaml.YAMLError, KeyError) as e:
+                QMessageBox.warning(
+                    self,
+                    "Warning",
+                    f"Failed to load existing backup: {e}. Creating new backup.",
+                )
+                existing_data = []
+                existing_offsets = set()
+
+        # Collect new offsets that aren't already saved
+        new_data = []
         for change in changes:
+            # Skip if this offset is already saved
+            if change.offset in existing_offsets:
+                continue
+
             addr = self._offset_to_rva(change.offset, binary)
             size = (
                 len(bytes.fromhex(change.value))
@@ -384,9 +402,10 @@ class MainWindow(QMainWindow):
                 continue
             try:
                 original_bytes = binary.get_data(addr, size)
-                original_data.append(
+                new_data.append(
                     {"offset": change.offset, "value": original_bytes.hex()}
                 )
+                existing_offsets.add(change.offset)
             except Exception as e:
                 QMessageBox.warning(
                     self,
@@ -395,9 +414,12 @@ class MainWindow(QMainWindow):
                 )
                 return
 
+        # Merge existing and new data
+        merged_data = existing_data + new_data
+
         try:
             with open(backup_path, "w", encoding="utf-8") as f:
-                yaml.dump(original_data, f, default_flow_style=False)
+                yaml.dump(merged_data, f, default_flow_style=False)
         except (IOError, OSError, yaml.YAMLError) as e:
             QMessageBox.warning(self, "Warning", f"Failed to save backup: {e}")
 
