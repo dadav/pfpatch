@@ -3,7 +3,7 @@ import yaml
 import pefile
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple, Union
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 __version__ = "0.1.0"
 
@@ -31,11 +31,21 @@ class PatchChange(BaseModel):
     """Represents a single byte change in a patch"""
 
     file: Optional[str] = None
-    offset: int
+    offset: Optional[int] = None  # Either offset or pattern must be provided
+    pattern: Optional[str] = None  # Hex pattern to search for (e.g., "48 8B 05 ?? ?? ?? ??")
+    pattern_offset: Optional[int] = (
+        None  # Offset within matched pattern (default: 0, patches at start of match)
+    )
     value: Optional[str] = None
     size: Optional[int] = None
     formula: Optional[str] = (
         None  # Formula/expression for editable patches (e.g., "value * 0x10", "value + 5")
+    )
+    display_formula: Optional[str] = (
+        None  # Formula to convert stored value to display value (e.g., "value / 86400" for seconds to days)
+    )
+    input_formula: Optional[str] = (
+        None  # Formula to convert display value to stored value (e.g., "value * 86400" for days to seconds)
     )
 
     @field_validator("value")
@@ -50,6 +60,28 @@ class PatchChange(BaseModel):
         except ValueError:
             raise ValueError(f"Invalid hex value: {v}")
 
+    @field_validator("pattern")
+    @classmethod
+    def validate_pattern(cls, v: Optional[str]) -> Optional[str]:
+        """Validate pattern format (hex bytes, supports ?? as wildcard)"""
+        if v is None:
+            return v
+        v = v.strip()
+        if not v:
+            return None
+        # Remove spaces and validate hex format
+        parts = v.split()
+        for part in parts:
+            if part.upper() == "??":
+                continue  # Wildcard byte
+            try:
+                int(part, 16)
+                if len(part) > 2:
+                    raise ValueError(f"Invalid hex byte in pattern: {part}")
+            except ValueError:
+                raise ValueError(f"Invalid pattern format: {v}")
+        return v
+
     @field_validator("formula")
     @classmethod
     def validate_formula(cls, v: Optional[str]) -> Optional[str]:
@@ -63,6 +95,29 @@ class PatchChange(BaseModel):
         if "value" not in v:
             raise ValueError("Formula must contain 'value' variable")
         return v
+
+    @field_validator("display_formula", "input_formula")
+    @classmethod
+    def validate_display_input_formula(cls, v: Optional[str]) -> Optional[str]:
+        """Validate display/input formula syntax (basic check)"""
+        if v is None:
+            return None
+        v = v.strip()
+        if not v:
+            return None
+        # Basic syntax check - must contain 'value' variable
+        if "value" not in v:
+            raise ValueError("Display/input formula must contain 'value' variable")
+        return v
+
+    @model_validator(mode='after')
+    def validate_offset_or_pattern(self) -> 'PatchChange':
+        """Validate that either offset or pattern is provided"""
+        if self.offset is None and self.pattern is None:
+            raise ValueError("Either 'offset' or 'pattern' must be provided")
+        if self.offset is not None and self.pattern is not None:
+            raise ValueError("Cannot specify both 'offset' and 'pattern'")
+        return self
 
 
 class Patch(BaseModel):
@@ -257,6 +312,85 @@ class MainWindow(QMainWindow):
         except Exception as e:
             raise ValueError(f"Error evaluating formula '{formula}': {e}")
 
+    def _search_pattern(self, pattern: str, binary: pefile.PE) -> Optional[int]:
+        """Search for a pattern in the binary and return the offset (virtual address) of the first match
+        
+        Pattern format: hex bytes separated by spaces, "??" for wildcard bytes
+        Example: "48 8B 05 ?? ?? ?? ??" matches "48 8B 05" followed by 4 wildcard bytes
+        
+        Returns the virtual address offset of the match, or None if not found
+        """
+        # Parse pattern into bytes and wildcards
+        pattern_parts = pattern.strip().split()
+        if not pattern_parts:
+            return None
+        
+        # Build search pattern: list of (byte_value, is_wildcard) tuples
+        search_pattern = []
+        for part in pattern_parts:
+            if part.upper() == "??":
+                search_pattern.append((None, True))
+            else:
+                try:
+                    byte_val = int(part, 16)
+                    if byte_val < 0 or byte_val > 255:
+                        return None
+                    search_pattern.append((byte_val, False))
+                except ValueError:
+                    return None
+        
+        if not search_pattern:
+            return None
+        
+        # Get binary data - search in memory-mapped image
+        try:
+            # Get the memory-mapped image (virtual address space)
+            binary_data = binary.get_memory_mapped_image()
+            
+            if len(binary_data) < len(search_pattern):
+                return None
+            
+            # Search for pattern
+            pattern_len = len(search_pattern)
+            for i in range(len(binary_data) - pattern_len + 1):
+                match = True
+                for j, (expected_byte, is_wildcard) in enumerate(search_pattern):
+                    if not is_wildcard and binary_data[i + j] != expected_byte:
+                        match = False
+                        break
+                
+                if match:
+                    # Found match at RVA i, convert to virtual address
+                    # The memory-mapped image is already in RVA space
+                    return binary.OPTIONAL_HEADER.ImageBase + i
+            
+            return None
+        except Exception:
+            return None
+
+    def _resolve_change_offset(self, change: PatchChange, binary: pefile.PE) -> Optional[int]:
+        """Resolve the actual offset (virtual address) for a change
+        
+        If change has an offset, returns it directly.
+        If change has a pattern, searches for it and returns the match location.
+        
+        Returns the virtual address offset, or None if pattern not found
+        """
+        if change.offset is not None:
+            return change.offset
+        
+        if change.pattern is None:
+            return None
+        
+        # Search for pattern
+        match_offset = self._search_pattern(change.pattern, binary)
+        if match_offset is None:
+            return None
+        
+        # Apply pattern_offset if specified (defaults to 0)
+        pattern_offset = change.pattern_offset or 0
+        return match_offset + pattern_offset
+
     def _get_change_binary(
         self, change: PatchChange, default_binary: Optional[str]
     ) -> str:
@@ -388,11 +522,21 @@ class MainWindow(QMainWindow):
         # Collect new offsets that aren't already saved
         new_data = []
         for change in changes:
+            # Resolve offset (from direct offset or pattern match)
+            resolved_offset = self._resolve_change_offset(change, binary)
+            if resolved_offset is None:
+                QMessageBox.warning(
+                    self,
+                    "Warning",
+                    f"Failed to resolve offset for change: pattern not found or invalid",
+                )
+                return
+            
             # Skip if this offset is already saved
-            if change.offset in existing_offsets:
+            if resolved_offset in existing_offsets:
                 continue
 
-            addr = self._offset_to_rva(change.offset, binary)
+            addr = self._offset_to_rva(resolved_offset, binary)
             size = (
                 len(bytes.fromhex(change.value))
                 if change.value is not None
@@ -403,14 +547,14 @@ class MainWindow(QMainWindow):
             try:
                 original_bytes = binary.get_data(addr, size)
                 new_data.append(
-                    {"offset": change.offset, "value": original_bytes.hex()}
+                    {"offset": resolved_offset, "value": original_bytes.hex()}
                 )
-                existing_offsets.add(change.offset)
+                existing_offsets.add(resolved_offset)
             except Exception as e:
                 QMessageBox.warning(
                     self,
                     "Warning",
-                    f"Failed to read original bytes at offset {change.offset:#x}: {e}",
+                    f"Failed to read original bytes at offset {resolved_offset:#x}: {e}",
                 )
                 return
 
@@ -487,7 +631,8 @@ class MainWindow(QMainWindow):
                                         modified_binaries.add(binary_name)
                             continue
 
-                        new_value_int = int(new_value_text)
+                        display_value_int = int(new_value_text)
+                        
                         # Get size from first change (all should have same size per validation)
                         if not patch.changes or patch.changes[0].size is None:
                             QMessageBox.warning(
@@ -497,12 +642,39 @@ class MainWindow(QMainWindow):
                             )
                             continue
                         size = patch.changes[0].size
+                        first_change = patch.changes[0]
+
+                        # Convert display value to stored value using input_formula if specified
+                        stored_value_int = display_value_int
+                        if first_change.input_formula:
+                            try:
+                                stored_value_int = self._evaluate_formula(
+                                    first_change.input_formula, display_value_int
+                                )
+                            except ValueError as e:
+                                QMessageBox.warning(
+                                    self,
+                                    "Error",
+                                    f"Invalid input formula in patch {patch_name}: {e}",
+                                )
+                                continue
 
                         # Apply value to all changes (with formulas if specified)
                         success = True
                         for binary_name, changes in changes_by_binary.items():
                             _, binary = self.binary_files[binary_name]
                             for change in changes:
+                                # Resolve offset (from direct offset or pattern match)
+                                resolved_offset = self._resolve_change_offset(change, binary)
+                                if resolved_offset is None:
+                                    QMessageBox.warning(
+                                        self,
+                                        "Error",
+                                        f"Failed to resolve offset for change in patch {patch_name}: pattern not found or invalid",
+                                    )
+                                    success = False
+                                    break
+
                                 if change.size != size:
                                     QMessageBox.warning(
                                         self,
@@ -512,16 +684,16 @@ class MainWindow(QMainWindow):
                                     success = False
                                     break
 
-                                # Calculate final value using formula if specified, otherwise use value as-is
+                                # Calculate final value using formula if specified, otherwise use stored value as-is
                                 try:
                                     final_value_int = self._evaluate_formula(
-                                        change.formula, new_value_int
+                                        change.formula, stored_value_int
                                     )
                                 except ValueError as e:
                                     QMessageBox.warning(
                                         self,
                                         "Error",
-                                        f"Invalid formula at offset {change.offset:#x}: {e}",
+                                        f"Invalid formula at offset {resolved_offset:#x}: {e}",
                                     )
                                     success = False
                                     break
@@ -532,7 +704,7 @@ class MainWindow(QMainWindow):
                                     QMessageBox.warning(
                                         self,
                                         "Error",
-                                        f"Value {final_value_int} exceeds maximum for {size} byte(s) at offset {change.offset:#x}",
+                                        f"Value {final_value_int} exceeds maximum for {size} byte(s) at offset {resolved_offset:#x}",
                                     )
                                     success = False
                                     break
@@ -540,7 +712,7 @@ class MainWindow(QMainWindow):
                                     QMessageBox.warning(
                                         self,
                                         "Error",
-                                        f"Value {final_value_int} is negative at offset {change.offset:#x}",
+                                        f"Value {final_value_int} is negative at offset {resolved_offset:#x}",
                                     )
                                     success = False
                                     break
@@ -549,13 +721,13 @@ class MainWindow(QMainWindow):
                                     final_value = final_value_int.to_bytes(
                                         size, byteorder="little"
                                     )
-                                    addr = self._offset_to_rva(change.offset, binary)
+                                    addr = self._offset_to_rva(resolved_offset, binary)
                                     binary.set_bytes_at_rva(addr, final_value)
                                 except Exception as e:
                                     QMessageBox.warning(
                                         self,
                                         "Error",
-                                        f"Failed to apply patch at offset {change.offset:#x}: {e}",
+                                        f"Failed to apply patch at offset {resolved_offset:#x}: {e}",
                                     )
                                     success = False
                                     break
@@ -585,7 +757,16 @@ class MainWindow(QMainWindow):
                             for change in changes:
                                 if change.value is None:
                                     continue
-                                addr = self._offset_to_rva(change.offset, binary)
+                                # Resolve offset (from direct offset or pattern match)
+                                resolved_offset = self._resolve_change_offset(change, binary)
+                                if resolved_offset is None:
+                                    QMessageBox.warning(
+                                        self,
+                                        "Error",
+                                        f"Failed to resolve offset for change in patch {patch_name}: pattern not found or invalid",
+                                    )
+                                    continue
+                                addr = self._offset_to_rva(resolved_offset, binary)
                                 binary.set_bytes_at_rva(addr, bytes.fromhex(change.value))
                             modified_binaries.add(binary_name)
                     else:
@@ -795,9 +976,10 @@ class MainWindow(QMainWindow):
                             # Check if all changes have the same value
                             if first_change.size is not None:
                                 try:
-                                    addr = self._offset_to_rva(
-                                        first_change.offset, binary
-                                    )
+                                    first_offset = self._resolve_change_offset(first_change, binary)
+                                    if first_offset is None:
+                                        raise ValueError("Failed to resolve offset for first change")
+                                    addr = self._offset_to_rva(first_offset, binary)
                                     current = int.from_bytes(
                                         binary.get_data(addr, first_change.size),
                                         byteorder="little",
@@ -815,8 +997,12 @@ class MainWindow(QMainWindow):
                                         _, change_binary = self.binary_files[
                                             change_binary_name
                                         ]
+                                        change_offset = self._resolve_change_offset(change, change_binary)
+                                        if change_offset is None:
+                                            all_same = False
+                                            break
                                         change_addr = self._offset_to_rva(
-                                            change.offset, change_binary
+                                            change_offset, change_binary
                                         )
                                         change_value = int.from_bytes(
                                             change_binary.get_data(
@@ -828,11 +1014,22 @@ class MainWindow(QMainWindow):
                                             all_same = False
                                             break
 
+                                    # Apply display formula if specified (convert stored to display format)
+                                    display_value = current
+                                    if first_change.display_formula:
+                                        try:
+                                            display_value = self._evaluate_formula(
+                                                first_change.display_formula, current
+                                            )
+                                        except Exception:
+                                            # If display formula fails, use raw value
+                                            pass
+                                    
                                     if all_same:
-                                        value_widget.setText(str(current))
+                                        value_widget.setText(str(display_value))
                                     else:
                                         # Values differ, show first one with a note
-                                        value_widget.setText(str(current))
+                                        value_widget.setText(str(display_value))
                                         value_widget.setToolTip(
                                             f"Note: Current values differ across {len(patch.changes)} locations. "
                                             f"Entering a value will apply it to all locations."
@@ -853,28 +1050,40 @@ class MainWindow(QMainWindow):
 
                     patch_layout.addWidget(value_widget)
 
-                    # Show number of locations and formulas if multiple changes or formulas exist
-                    has_formulas = any(c.formula for c in patch.changes)
-                    if len(patch.changes) > 1 or has_formulas:
-                        location_parts = []
-                        for i, c in enumerate(patch.changes):
+                    # Always show location information
+                    location_parts = []
+                    for i, c in enumerate(patch.changes):
+                        if c.offset is not None:
                             part = f"{c.offset:#x}"
-                            if c.formula:
-                                part += f" ({c.formula})"
-                            location_parts.append(part)
-
-                        if len(patch.changes) > 1:
-                            locations_text = (
-                                f"Applies to {len(patch.changes)} location(s): "
-                                + ", ".join(location_parts)
-                            )
+                        elif c.pattern is not None:
+                            part = f"pattern: {c.pattern}"
+                            if binaries_loaded:
+                                # Try to resolve and show actual offset
+                                change_binary_name = self._get_change_binary(c, patch.file)
+                                if change_binary_name in self.binary_files:
+                                    _, change_binary = self.binary_files[change_binary_name]
+                                    resolved = self._resolve_change_offset(c, change_binary)
+                                    if resolved is not None:
+                                        part += f" → {resolved:#x}"
                         else:
-                            locations_text = f"Offset {location_parts[0]}"
+                            part = "unknown"
+                        
+                        if c.formula:
+                            part += f" ({c.formula})"
+                        location_parts.append(part)
 
-                        locations_label = QLabel(locations_text)
-                        locations_label.setStyleSheet("color: gray; font-size: 9pt;")
-                        locations_label.setWordWrap(True)
-                        patch_layout.addWidget(locations_label)
+                    if len(patch.changes) > 1:
+                        locations_text = (
+                            f"Applies to {len(patch.changes)} location(s): "
+                            + ", ".join(location_parts)
+                        )
+                    else:
+                        locations_text = f"Location: {location_parts[0]}"
+
+                    locations_label = QLabel(locations_text)
+                    locations_label.setStyleSheet("color: gray; font-size: 9pt;")
+                    locations_label.setWordWrap(True)
+                    patch_layout.addWidget(locations_label)
 
                     patch.widget = value_widget
                 else:
@@ -893,7 +1102,11 @@ class MainWindow(QMainWindow):
                                     change, patch.file
                                 )
                                 _, change_binary = self.binary_files[change_binary_name]
-                                addr = self._offset_to_rva(change.offset, change_binary)
+                                resolved_offset = self._resolve_change_offset(change, change_binary)
+                                if resolved_offset is None:
+                                    all_match = False
+                                    break
+                                addr = self._offset_to_rva(resolved_offset, change_binary)
                                 desired = bytes.fromhex(change.value)
                                 current = change_binary.get_data(addr, len(desired))
                                 if current != desired:
@@ -907,6 +1120,42 @@ class MainWindow(QMainWindow):
                             pass
 
                     patch_layout.addWidget(value_widget)
+                    
+                    # Always show location information
+                    location_parts = []
+                    for i, c in enumerate(patch.changes):
+                        if c.offset is not None:
+                            part = f"{c.offset:#x}"
+                        elif c.pattern is not None:
+                            part = f"pattern: {c.pattern}"
+                            if binaries_loaded:
+                                # Try to resolve and show actual offset
+                                change_binary_name = self._get_change_binary(c, patch.file)
+                                if change_binary_name in self.binary_files:
+                                    _, change_binary = self.binary_files[change_binary_name]
+                                    resolved = self._resolve_change_offset(c, change_binary)
+                                    if resolved is not None:
+                                        part += f" → {resolved:#x}"
+                        else:
+                            part = "unknown"
+                        
+                        if c.formula:
+                            part += f" ({c.formula})"
+                        location_parts.append(part)
+
+                    if len(patch.changes) > 1:
+                        locations_text = (
+                            f"Applies to {len(patch.changes)} location(s): "
+                            + ", ".join(location_parts)
+                        )
+                    else:
+                        locations_text = f"Location: {location_parts[0]}"
+
+                    locations_label = QLabel(locations_text)
+                    locations_label.setStyleSheet("color: gray; font-size: 9pt;")
+                    locations_label.setWordWrap(True)
+                    patch_layout.addWidget(locations_label)
+                    
                     patch.widget = value_widget
 
                 if not binaries_loaded:
