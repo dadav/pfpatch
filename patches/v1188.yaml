@@ -6,8 +6,24 @@ files:
     default: GatewayServer.exe
   sro_client:
     default: sro_client.exe
+  shardmanager:
+    default: SR_ShardManager.exe
 
 patches:
+  - name: Max characters per account
+    description: |
+      Adjust the number of characters per account
+    editable: true
+    file: sro_client
+    changes:
+      - offset: 0x85de6d
+        size: 1
+      - offset: 0x40F47F
+        size: 1
+        file: shardmanager
+      - offset: 0x429B86
+        size: 1
+        file: shardmanager
   - name: Max job level
     description: |
       Adjust the max job level.
@@ -16,6 +32,14 @@ patches:
     changes:
       - offset: 0x60de6c
         size: 1
+  - name: Job leaving penalty
+    description: |
+      The days of penalty for leaving a job.
+    editable: true
+    file: gameserver
+    changes:
+      - offset: 0x4e816d
+        size: 3
   - name: Level cap
     description: |
       The max level on this server.
