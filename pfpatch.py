@@ -1050,42 +1050,40 @@ class MainWindow(QMainWindow):
 
                     patch_layout.addWidget(value_widget)
 
-                    # Show number of locations and formulas if multiple changes or formulas exist
-                    has_formulas = any(c.formula for c in patch.changes)
-                    if len(patch.changes) > 1 or has_formulas or any(c.pattern for c in patch.changes):
-                        location_parts = []
-                        for i, c in enumerate(patch.changes):
-                            if c.offset is not None:
-                                part = f"{c.offset:#x}"
-                            elif c.pattern is not None:
-                                part = f"pattern: {c.pattern}"
-                                if binaries_loaded:
-                                    # Try to resolve and show actual offset
-                                    change_binary_name = self._get_change_binary(c, patch.file)
-                                    if change_binary_name in self.binary_files:
-                                        _, change_binary = self.binary_files[change_binary_name]
-                                        resolved = self._resolve_change_offset(c, change_binary)
-                                        if resolved is not None:
-                                            part += f" → {resolved:#x}"
-                            else:
-                                part = "unknown"
-                            
-                            if c.formula:
-                                part += f" ({c.formula})"
-                            location_parts.append(part)
-
-                        if len(patch.changes) > 1:
-                            locations_text = (
-                                f"Applies to {len(patch.changes)} location(s): "
-                                + ", ".join(location_parts)
-                            )
+                    # Always show location information
+                    location_parts = []
+                    for i, c in enumerate(patch.changes):
+                        if c.offset is not None:
+                            part = f"{c.offset:#x}"
+                        elif c.pattern is not None:
+                            part = f"pattern: {c.pattern}"
+                            if binaries_loaded:
+                                # Try to resolve and show actual offset
+                                change_binary_name = self._get_change_binary(c, patch.file)
+                                if change_binary_name in self.binary_files:
+                                    _, change_binary = self.binary_files[change_binary_name]
+                                    resolved = self._resolve_change_offset(c, change_binary)
+                                    if resolved is not None:
+                                        part += f" → {resolved:#x}"
                         else:
-                            locations_text = f"Location: {location_parts[0]}"
+                            part = "unknown"
+                        
+                        if c.formula:
+                            part += f" ({c.formula})"
+                        location_parts.append(part)
 
-                        locations_label = QLabel(locations_text)
-                        locations_label.setStyleSheet("color: gray; font-size: 9pt;")
-                        locations_label.setWordWrap(True)
-                        patch_layout.addWidget(locations_label)
+                    if len(patch.changes) > 1:
+                        locations_text = (
+                            f"Applies to {len(patch.changes)} location(s): "
+                            + ", ".join(location_parts)
+                        )
+                    else:
+                        locations_text = f"Location: {location_parts[0]}"
+
+                    locations_label = QLabel(locations_text)
+                    locations_label.setStyleSheet("color: gray; font-size: 9pt;")
+                    locations_label.setWordWrap(True)
+                    patch_layout.addWidget(locations_label)
 
                     patch.widget = value_widget
                 else:
@@ -1122,6 +1120,42 @@ class MainWindow(QMainWindow):
                             pass
 
                     patch_layout.addWidget(value_widget)
+                    
+                    # Always show location information
+                    location_parts = []
+                    for i, c in enumerate(patch.changes):
+                        if c.offset is not None:
+                            part = f"{c.offset:#x}"
+                        elif c.pattern is not None:
+                            part = f"pattern: {c.pattern}"
+                            if binaries_loaded:
+                                # Try to resolve and show actual offset
+                                change_binary_name = self._get_change_binary(c, patch.file)
+                                if change_binary_name in self.binary_files:
+                                    _, change_binary = self.binary_files[change_binary_name]
+                                    resolved = self._resolve_change_offset(c, change_binary)
+                                    if resolved is not None:
+                                        part += f" → {resolved:#x}"
+                        else:
+                            part = "unknown"
+                        
+                        if c.formula:
+                            part += f" ({c.formula})"
+                        location_parts.append(part)
+
+                    if len(patch.changes) > 1:
+                        locations_text = (
+                            f"Applies to {len(patch.changes)} location(s): "
+                            + ", ".join(location_parts)
+                        )
+                    else:
+                        locations_text = f"Location: {location_parts[0]}"
+
+                    locations_label = QLabel(locations_text)
+                    locations_label.setStyleSheet("color: gray; font-size: 9pt;")
+                    locations_label.setWordWrap(True)
+                    patch_layout.addWidget(locations_label)
+                    
                     patch.widget = value_widget
 
                 if not binaries_loaded:
