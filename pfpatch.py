@@ -30,6 +30,7 @@ from PyQt6.QtWidgets import (
 class PatchChange(BaseModel):
     """Represents a single byte change in a patch"""
 
+    file: Optional[str] = None
     offset: int
     value: Optional[str] = None
     size: Optional[int] = None
@@ -68,7 +69,7 @@ class Patch(BaseModel):
     """Represents a patch configuration"""
 
     name: str
-    file: str
+    file: Optional[str] = None
     description: Optional[str] = None
     editable: bool = False
     changes: List[PatchChange]
@@ -80,6 +81,16 @@ class Patch(BaseModel):
         """Validate changes based on patch type"""
         if not v:
             raise ValueError("Patch must have at least one change")
+
+        default_binary = info.data.get("file")
+
+        # Ensure each change has a binary target (either own file or default)
+        for i, change in enumerate(v):
+            target_binary = change.file or default_binary
+            if target_binary is None:
+                raise ValueError(
+                    f"Change {i} must specify a file when patch has no default file"
+                )
 
         # If editable, all changes must have size specified
         if info.data.get("editable", False):
@@ -125,10 +136,20 @@ class Config(BaseModel):
 
         file_names = set(info.data["files"].keys())
         for patch in v:
-            if patch.file not in file_names:
+            if patch.file and patch.file not in file_names:
                 raise ValueError(
                     f"Patch '{patch.name}' references unknown file '{patch.file}'"
                 )
+            for change in patch.changes:
+                target_file = change.file or patch.file
+                if target_file is None:
+                    raise ValueError(
+                        f"Patch '{patch.name}' has change without a file target"
+                    )
+                if target_file not in file_names:
+                    raise ValueError(
+                        f"Patch '{patch.name}' references unknown file '{target_file}'"
+                    )
 
         return v
 
@@ -236,6 +257,27 @@ class MainWindow(QMainWindow):
         except Exception as e:
             raise ValueError(f"Error evaluating formula '{formula}': {e}")
 
+    def _get_change_binary(
+        self, change: PatchChange, default_binary: Optional[str]
+    ) -> str:
+        """Resolve which binary a change targets"""
+        binary_name = change.file or default_binary
+        if binary_name is None:
+            raise ValueError("Change does not specify a target binary")
+        return binary_name
+
+    def _group_changes_by_binary(self, patch: Patch) -> Dict[str, List[PatchChange]]:
+        """Group patch changes by their target binary"""
+        grouped: Dict[str, List[PatchChange]] = {}
+        for change in patch.changes:
+            binary_name = self._get_change_binary(change, patch.file)
+            grouped.setdefault(binary_name, []).append(change)
+        return grouped
+
+    def _get_patch_required_binaries(self, patch: Patch) -> List[str]:
+        """Return list of binaries a patch touches"""
+        return sorted(self._group_changes_by_binary(patch).keys())
+
     def _close_binary(self, binary_name: str) -> None:
         """Close and remove a binary file from memory"""
         if binary_name in self.binary_files:
@@ -319,7 +361,9 @@ class MainWindow(QMainWindow):
         backup_path = self.get_backup_path(binary_name)
         return backup_path.exists()
 
-    def save_original_bytes(self, binary_name: str, patch: Patch) -> None:
+    def save_original_bytes(
+        self, binary_name: str, changes: List[PatchChange]
+    ) -> None:
         """Save original bytes before first patch"""
         # Only save if binary hasn't been patched before
         if self.is_binary_patched(binary_name):
@@ -329,7 +373,7 @@ class MainWindow(QMainWindow):
         _, binary = self.binary_files[binary_name]
 
         original_data = []
-        for change in patch.changes:
+        for change in changes:
             addr = self._offset_to_rva(change.offset, binary)
             size = (
                 len(bytes.fromhex(change.value))
@@ -357,7 +401,7 @@ class MainWindow(QMainWindow):
         except (IOError, OSError, yaml.YAMLError) as e:
             QMessageBox.warning(self, "Warning", f"Failed to save backup: {e}")
 
-    def restore_original_bytes(self, binary_name: str, patch: Patch) -> bool:
+    def restore_original_bytes(self, binary_name: str) -> bool:
         """Restore original bytes from backup"""
         backup_path = self.get_backup_path(binary_name)
 
@@ -394,26 +438,31 @@ class MainWindow(QMainWindow):
             modified_binaries = set()
 
             for patch_name, patch in self.patches.items():
-                binary_name = patch.file
+                try:
+                    changes_by_binary = self._group_changes_by_binary(patch)
+                except ValueError as e:
+                    QMessageBox.warning(self, "Error", f"Invalid patch '{patch_name}': {e}")
+                    continue
 
-                # Check if binary is loaded
-                if binary_name not in self.binary_files:
+                required_binaries = set(changes_by_binary.keys())
+
+                # Check if all binaries are loaded
+                if any(b not in self.binary_files for b in required_binaries):
                     continue
 
                 # Skip if patch widget is disabled
                 if not patch.widget.isEnabled():
                     continue
 
-                binary_path, binary = self.binary_files[binary_name]
-
                 if patch.editable:
                     try:
                         new_value_text = patch.widget.text().strip()
                         if not new_value_text:
                             # If empty, try to restore original if backup exists
-                            if self.is_binary_patched(binary_name):
-                                if self.restore_original_bytes(binary_name, patch):
-                                    modified_binaries.add(binary_name)
+                            for binary_name in required_binaries:
+                                if self.is_binary_patched(binary_name):
+                                    if self.restore_original_bytes(binary_name):
+                                        modified_binaries.add(binary_name)
                             continue
 
                         new_value_int = int(new_value_text)
@@ -429,66 +478,70 @@ class MainWindow(QMainWindow):
 
                         # Apply value to all changes (with formulas if specified)
                         success = True
-                        for change in patch.changes:
-                            if change.size != size:
-                                QMessageBox.warning(
-                                    self,
-                                    "Error",
-                                    f"Patch {patch_name} has inconsistent sizes",
-                                )
-                                success = False
-                                break
+                        for binary_name, changes in changes_by_binary.items():
+                            _, binary = self.binary_files[binary_name]
+                            for change in changes:
+                                if change.size != size:
+                                    QMessageBox.warning(
+                                        self,
+                                        "Error",
+                                        f"Patch {patch_name} has inconsistent sizes",
+                                    )
+                                    success = False
+                                    break
 
-                            # Calculate final value using formula if specified, otherwise use value as-is
-                            try:
-                                final_value_int = self._evaluate_formula(
-                                    change.formula, new_value_int
-                                )
-                            except ValueError as e:
-                                QMessageBox.warning(
-                                    self,
-                                    "Error",
-                                    f"Invalid formula at offset {change.offset:#x}: {e}",
-                                )
-                                success = False
-                                break
+                                # Calculate final value using formula if specified, otherwise use value as-is
+                                try:
+                                    final_value_int = self._evaluate_formula(
+                                        change.formula, new_value_int
+                                    )
+                                except ValueError as e:
+                                    QMessageBox.warning(
+                                        self,
+                                        "Error",
+                                        f"Invalid formula at offset {change.offset:#x}: {e}",
+                                    )
+                                    success = False
+                                    break
 
-                            # Check for overflow based on size
-                            max_value = (1 << (size * 8)) - 1
-                            if final_value_int > max_value:
-                                QMessageBox.warning(
-                                    self,
-                                    "Error",
-                                    f"Value {final_value_int} exceeds maximum for {size} byte(s) at offset {change.offset:#x}",
-                                )
-                                success = False
-                                break
-                            if final_value_int < 0:
-                                QMessageBox.warning(
-                                    self,
-                                    "Error",
-                                    f"Value {final_value_int} is negative at offset {change.offset:#x}",
-                                )
-                                success = False
-                                break
+                                # Check for overflow based on size
+                                max_value = (1 << (size * 8)) - 1
+                                if final_value_int > max_value:
+                                    QMessageBox.warning(
+                                        self,
+                                        "Error",
+                                        f"Value {final_value_int} exceeds maximum for {size} byte(s) at offset {change.offset:#x}",
+                                    )
+                                    success = False
+                                    break
+                                if final_value_int < 0:
+                                    QMessageBox.warning(
+                                        self,
+                                        "Error",
+                                        f"Value {final_value_int} is negative at offset {change.offset:#x}",
+                                    )
+                                    success = False
+                                    break
 
-                            try:
-                                final_value = final_value_int.to_bytes(
-                                    size, byteorder="little"
-                                )
-                                addr = self._offset_to_rva(change.offset, binary)
-                                binary.set_bytes_at_rva(addr, final_value)
-                            except Exception as e:
-                                QMessageBox.warning(
-                                    self,
-                                    "Error",
-                                    f"Failed to apply patch at offset {change.offset:#x}: {e}",
-                                )
-                                success = False
+                                try:
+                                    final_value = final_value_int.to_bytes(
+                                        size, byteorder="little"
+                                    )
+                                    addr = self._offset_to_rva(change.offset, binary)
+                                    binary.set_bytes_at_rva(addr, final_value)
+                                except Exception as e:
+                                    QMessageBox.warning(
+                                        self,
+                                        "Error",
+                                        f"Failed to apply patch at offset {change.offset:#x}: {e}",
+                                    )
+                                    success = False
+                                    break
+                            if not success:
                                 break
 
                         if success:
-                            modified_binaries.add(binary_name)
+                            modified_binaries.update(required_binaries)
                     except ValueError as e:
                         QMessageBox.warning(
                             self, "Error", f"Invalid value in {patch_name}: {str(e)}"
@@ -503,17 +556,20 @@ class MainWindow(QMainWindow):
                         continue
                 else:
                     if patch.widget.isChecked():
-                        self.save_original_bytes(binary_name, patch)
+                        for binary_name, changes in changes_by_binary.items():
+                            self.save_original_bytes(binary_name, changes)
 
-                        for change in patch.changes:
-                            if change.value is None:
-                                continue
-                            addr = self._offset_to_rva(change.offset, binary)
-                            binary.set_bytes_at_rva(addr, bytes.fromhex(change.value))
-                        modified_binaries.add(binary_name)
-                    else:
-                        if self.restore_original_bytes(binary_name, patch):
+                            _, binary = self.binary_files[binary_name]
+                            for change in changes:
+                                if change.value is None:
+                                    continue
+                                addr = self._offset_to_rva(change.offset, binary)
+                                binary.set_bytes_at_rva(addr, bytes.fromhex(change.value))
                             modified_binaries.add(binary_name)
+                    else:
+                        for binary_name in required_binaries:
+                            if self.restore_original_bytes(binary_name):
+                                modified_binaries.add(binary_name)
 
             # Write all modified binaries
             for binary_name in modified_binaries:
@@ -688,7 +744,7 @@ class MainWindow(QMainWindow):
 
         for idx, patch in enumerate(patches):
             try:
-                binary_name = patch.file
+                required_binaries = self._get_patch_required_binaries(patch)
 
                 patch_group = QGroupBox(patch.name)
 
@@ -698,18 +754,23 @@ class MainWindow(QMainWindow):
 
                 patch_layout = QVBoxLayout()
 
-                # Check if the required binary is loaded
-                binary_loaded = binary_name in self.binary_files
+                # Check if the required binaries are loaded
+                binaries_loaded = all(
+                    name in self.binary_files for name in required_binaries
+                )
 
                 if patch.editable:
                     value_widget = QLineEdit()
-                    value_widget.setEnabled(binary_loaded)
+                    value_widget.setEnabled(binaries_loaded)
 
-                    if binary_loaded:
-                        _, binary = self.binary_files[binary_name]
+                    if binaries_loaded and len(patch.changes) > 0:
+                        first_change = patch.changes[0]
+                        first_binary_name = self._get_change_binary(
+                            first_change, patch.file
+                        )
+                        _, binary = self.binary_files[first_binary_name]
                         if len(patch.changes) > 0:
                             # Check if all changes have the same value
-                            first_change = patch.changes[0]
                             if first_change.size is not None:
                                 try:
                                     addr = self._offset_to_rva(
@@ -726,11 +787,19 @@ class MainWindow(QMainWindow):
                                         if change.size != first_change.size:
                                             all_same = False
                                             break
+                                        change_binary_name = self._get_change_binary(
+                                            change, patch.file
+                                        )
+                                        _, change_binary = self.binary_files[
+                                            change_binary_name
+                                        ]
                                         change_addr = self._offset_to_rva(
-                                            change.offset, binary
+                                            change.offset, change_binary
                                         )
                                         change_value = int.from_bytes(
-                                            binary.get_data(change_addr, change.size),
+                                            change_binary.get_data(
+                                                change_addr, change.size
+                                            ),
                                             byteorder="little",
                                         )
                                         if change_value != current:
@@ -755,10 +824,10 @@ class MainWindow(QMainWindow):
                     else:
                         if len(patch.changes) > 1:
                             value_widget.setPlaceholderText(
-                                f"Load {binary_name} first (will apply to {len(patch.changes)} locations)"
+                                f"Load required binaries first (will apply to {len(patch.changes)} locations)"
                             )
                         else:
-                            value_widget.setPlaceholderText(f"Load {binary_name} first")
+                            value_widget.setPlaceholderText("Load required binaries first")
 
                     patch_layout.addWidget(value_widget)
 
@@ -788,10 +857,9 @@ class MainWindow(QMainWindow):
                     patch.widget = value_widget
                 else:
                     value_widget = QCheckBox("Enable")
-                    value_widget.setEnabled(binary_loaded)
+                    value_widget.setEnabled(binaries_loaded)
 
-                    if binary_loaded:
-                        _, binary = self.binary_files[binary_name]
+                    if binaries_loaded:
                         # Check current state
                         all_match = True
                         try:
@@ -799,9 +867,13 @@ class MainWindow(QMainWindow):
                                 if change.value is None:
                                     all_match = False
                                     break
-                                addr = self._offset_to_rva(change.offset, binary)
+                                change_binary_name = self._get_change_binary(
+                                    change, patch.file
+                                )
+                                _, change_binary = self.binary_files[change_binary_name]
+                                addr = self._offset_to_rva(change.offset, change_binary)
                                 desired = bytes.fromhex(change.value)
-                                current = binary.get_data(addr, len(desired))
+                                current = change_binary.get_data(addr, len(desired))
                                 if current != desired:
                                     all_match = False
                                     break
@@ -815,8 +887,13 @@ class MainWindow(QMainWindow):
                     patch_layout.addWidget(value_widget)
                     patch.widget = value_widget
 
-                if not binary_loaded:
-                    status_label = QLabel(f"Requires binary: {binary_name}")
+                if not binaries_loaded:
+                    missing = [
+                        name for name in required_binaries if name not in self.binary_files
+                    ]
+                    status_label = QLabel(
+                        f"Requires binaries: {', '.join(required_binaries)}\nMissing: {', '.join(missing)}"
+                    )
                     status_label.setStyleSheet("color: orange;")
                     patch_layout.addWidget(status_label)
 
