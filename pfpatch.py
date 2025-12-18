@@ -1098,11 +1098,20 @@ class MainWindow(QMainWindow):
                         self.config_files_cbox.setCurrentIndex(i)
                         restored_index = i
                         break
+            else:
+                # Saved config file doesn't exist anymore, clear the reference
+                self.saved_selected_config = None
+                self.save_settings()
+        
+        # If saved config not found, select first config (if any)
+        if restored_index == -1 and self.config_files_cbox.count() > 0:
+            self.config_files_cbox.setCurrentIndex(0)
+            restored_index = 0
         
         # Unblock signals
         self.config_files_cbox.blockSignals(False)
         
-        # If we restored a config, manually trigger the change handler
+        # If we have a valid index, manually trigger the change handler
         # (setCurrentIndex while blocked doesn't trigger the signal)
         if restored_index != -1:
             self.config_changed(restored_index)
