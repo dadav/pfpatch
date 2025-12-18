@@ -19,7 +19,7 @@ A graphical tool for patching Windows PE (Portable Executable) binary files. It 
 
 ### Pre-built Executables
 
-Download the latest release from the [Releases](https://github.com/yourusername/pfpatch/releases) page:
+Download the latest release from the [Releases](https://github.com/dadav/pfpatch/releases) page:
 
 - Windows: `pfpatch-vX.X.X-windows.exe`
 - Linux: `pfpatch-vX.X.X-linux`
