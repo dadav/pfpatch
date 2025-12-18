@@ -1,6 +1,7 @@
 import sys
 import yaml
 import pefile
+import shutil
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple, Union
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -26,6 +27,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
 )
 
+from PyQt6.QtCore import Qt
 
 class PatchChange(BaseModel):
     """Represents a single byte change in a patch"""
@@ -214,31 +216,46 @@ class Settings(BaseModel):
 
     binary_paths: Dict[str, str] = Field(default_factory=dict)
     config_dir: Optional[str] = None
+    selected_config: Optional[str] = None
 
 
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
+        """Initialize the main window and set up directories, settings, and UI.
+        
+        Sets up backup and patches directories based on whether running as
+        compiled executable or script. Initializes UI components and loads
+        saved settings and default configurations.
+        """
         super().__init__()
 
         self.binary_files: Dict[str, Tuple[str, pefile.PE]] = {}
         self.saved_binary_paths: Dict[str, str] = {}
         self.patches: Dict[str, Patch] = {}
         self.config_dir: Optional[str] = None
+        self.saved_selected_config: Optional[str] = None
 
         # Set backup directory - use executable directory for onefile, or current dir for script
         if getattr(sys, "frozen", False):
             # Running as compiled executable - use directory where exe is located
             self.backup_dir = Path(sys.executable).parent / "backups"
+            self.patches_dir = Path(sys.executable).parent / "patches"
         else:
             # Running as script - use current directory
             self.backup_dir = Path("backups")
+            self.patches_dir = Path("patches")
         self.backup_dir.mkdir(exist_ok=True)
+        self.patches_dir.mkdir(exist_ok=True)
 
         # Set settings file location - same logic as backup dir
         if getattr(sys, "frozen", False):
             self.settings_file = Path(sys.executable).parent / "settings.yml"
         else:
             self.settings_file = Path("settings.yml")
+        
+        # Copy bundled patches to persistent location on first run (PyInstaller only)
+        if getattr(sys, "frozen", False):
+            self._ensure_patches_copied()
 
         self.current_config: Optional[Config] = None
 
@@ -260,8 +277,51 @@ class MainWindow(QMainWindow):
 
         return base_path / relative_path
 
+    def _ensure_patches_copied(self) -> None:
+        """Copy bundled patches to persistent location if not already present
+        
+        This allows users to modify and add new patch files even when running
+        from a PyInstaller onefile executable.
+        """
+        bundled_patches = self._get_resource_path("patches")
+        
+        # Only copy if bundled patches exist and persistent directory is empty or missing files
+        if not bundled_patches.exists():
+            return
+        
+        try:
+            # Get list of bundled patch files
+            bundled_files = {f.name for f in bundled_patches.glob("*.y?ml") if f.is_file()}
+            
+            if not bundled_files:
+                return
+            
+            # Check which files are missing in persistent location
+            existing_files = {f.name for f in self.patches_dir.glob("*.y?ml") if f.is_file()}
+            missing_files = bundled_files - existing_files
+            
+            # Copy missing files from bundled location
+            if missing_files:
+                for filename in missing_files:
+                    src = bundled_patches / filename
+                    dst = self.patches_dir / filename
+                    if src.exists() and src.is_file():
+                        shutil.copy2(src, dst)
+        except (IOError, OSError, shutil.Error) as e:
+            # Silently fail - user can still select patches directory manually
+            # or use bundled patches if persistent copy fails
+            pass
+
     def _offset_to_rva(self, offset: int, binary: pefile.PE) -> int:
-        """Convert virtual address offset to RVA (Relative Virtual Address)"""
+        """Convert virtual address offset to RVA (Relative Virtual Address).
+        
+        Args:
+            offset: Virtual address offset to convert
+            binary: PE file object containing the binary
+            
+        Returns:
+            RVA (Relative Virtual Address) calculated by subtracting ImageBase
+        """
         return offset - binary.OPTIONAL_HEADER.ImageBase
 
     def _evaluate_formula(self, formula: Optional[str], value: int) -> int:
@@ -394,14 +454,32 @@ class MainWindow(QMainWindow):
     def _get_change_binary(
         self, change: PatchChange, default_binary: Optional[str]
     ) -> str:
-        """Resolve which binary a change targets"""
+        """Resolve which binary a change targets.
+        
+        Args:
+            change: The patch change to resolve the target binary for
+            default_binary: Default binary name if change doesn't specify one
+            
+        Returns:
+            The name of the target binary
+            
+        Raises:
+            ValueError: If neither change.file nor default_binary is specified
+        """
         binary_name = change.file or default_binary
         if binary_name is None:
             raise ValueError("Change does not specify a target binary")
         return binary_name
 
     def _group_changes_by_binary(self, patch: Patch) -> Dict[str, List[PatchChange]]:
-        """Group patch changes by their target binary"""
+        """Group patch changes by their target binary.
+        
+        Args:
+            patch: The patch containing changes to group
+            
+        Returns:
+            Dictionary mapping binary names to lists of changes targeting that binary
+        """
         grouped: Dict[str, List[PatchChange]] = {}
         for change in patch.changes:
             binary_name = self._get_change_binary(change, patch.file)
@@ -409,11 +487,22 @@ class MainWindow(QMainWindow):
         return grouped
 
     def _get_patch_required_binaries(self, patch: Patch) -> List[str]:
-        """Return list of binaries a patch touches"""
+        """Return list of binaries a patch touches.
+        
+        Args:
+            patch: The patch to analyze
+            
+        Returns:
+            Sorted list of binary names that this patch requires
+        """
         return sorted(self._group_changes_by_binary(patch).keys())
 
     def _close_binary(self, binary_name: str) -> None:
-        """Close and remove a binary file from memory"""
+        """Close and remove a binary file from memory.
+        
+        Args:
+            binary_name: Name of the binary to close
+        """
         if binary_name in self.binary_files:
             _, binary = self.binary_files[binary_name]
             try:
@@ -423,7 +512,12 @@ class MainWindow(QMainWindow):
             del self.binary_files[binary_name]
 
     def load_settings(self) -> None:
-        """Load saved binary paths and config directory from settings file"""
+        """Load saved binary paths and config directory from settings file.
+        
+        Reads the settings YAML file and restores saved binary paths and
+        configuration directory. Shows warnings if loading fails but continues
+        execution with default values.
+        """
         if self.settings_file.exists():
             try:
                 with open(self.settings_file, "r", encoding="utf-8") as f:
@@ -432,21 +526,31 @@ class MainWindow(QMainWindow):
                         settings = Settings(**data)
                         self.saved_binary_paths = settings.binary_paths or {}
                         self.config_dir = settings.config_dir
+                        self.saved_selected_config = settings.selected_config
                     else:
                         self.config_dir = None
+                        self.saved_selected_config = None
             except (yaml.YAMLError, ValueError, KeyError) as e:
                 QMessageBox.warning(self, "Warning", f"Failed to load settings: {e}")
                 self.config_dir = None
+                self.saved_selected_config = None
             except Exception as e:
                 QMessageBox.warning(
                     self, "Warning", f"Unexpected error loading settings: {e}"
                 )
                 self.config_dir = None
+                self.saved_selected_config = None
         else:
             self.config_dir = None
+            self.saved_selected_config = None
 
     def save_settings(self) -> None:
-        """Save binary paths and config directory to settings file"""
+        """Save binary paths and config directory to settings file.
+        
+        Merges currently loaded binary paths with previously saved paths,
+        then writes all settings to the settings YAML file. Shows warnings
+        if saving fails but does not interrupt execution.
+        """
         try:
             # Extract paths from binary_files
             binary_paths = {name: path for name, (path, _) in self.binary_files.items()}
@@ -456,6 +560,7 @@ class MainWindow(QMainWindow):
             settings = Settings(
                 binary_paths=binary_paths,
                 config_dir=self.config_dir,
+                selected_config=self.saved_selected_config,
             )
 
             with open(self.settings_file, "w", encoding="utf-8") as f:
@@ -473,32 +578,73 @@ class MainWindow(QMainWindow):
             )
 
     def load_defaults(self) -> None:
-        """Load default configuration directory"""
+        """Load default configuration directory.
+        
+        Attempts to load the configuration directory in this order:
+        1. Saved config directory from settings (if exists)
+        2. Persistent patches directory (for PyInstaller or script mode)
+        3. Resource path patches directory (for PyInstaller bundled patches)
+        4. Current directory patches folder
+        
+        Selects the first available directory and populates the config file list.
+        """
         if self.config_dir and Path(self.config_dir).exists():
             self.select_config_dir(self.config_dir)
         else:
-            # Try resource path first (for PyInstaller), then current directory
-            default_path = self._get_resource_path("patches")
-            if not default_path.exists():
-                # Fallback to current directory
-                default_path = Path("patches")
+            # Use persistent patches directory (works for both PyInstaller and script mode)
+            # This allows users to modify and add new patch files
+            if self.patches_dir.exists():
+                self.select_config_dir(str(self.patches_dir))
+            else:
+                # Fallback: try resource path (for PyInstaller bundled patches)
+                default_path = self._get_resource_path("patches")
+                if not default_path.exists():
+                    # Final fallback: current directory
+                    default_path = Path("patches")
 
-            if default_path.exists():
-                self.select_config_dir(str(default_path))
+                if default_path.exists():
+                    self.select_config_dir(str(default_path))
 
     def get_backup_path(self, binary_name: str) -> Path:
-        """Generate backup file path for a binary"""
+        """Generate backup file path for a binary.
+        
+        Args:
+            binary_name: Name of the binary to get backup path for
+            
+        Returns:
+            Path object pointing to the backup YAML file for this binary
+        """
         return self.backup_dir / f"{binary_name}_backup.yaml"
 
     def is_binary_patched(self, binary_name: str) -> bool:
-        """Check if binary has been patched (backup exists)"""
+        """Check if binary has been patched (backup exists).
+        
+        Args:
+            binary_name: Name of the binary to check
+            
+        Returns:
+            True if backup file exists, False otherwise
+        """
         backup_path = self.get_backup_path(binary_name)
         return backup_path.exists()
 
     def save_original_bytes(
         self, binary_name: str, changes: List[PatchChange]
     ) -> None:
-        """Save original bytes before first patch"""
+        """Save original bytes before first patch.
+        
+        Reads the original bytes from the binary at each change location
+        and saves them to a backup YAML file. Merges with existing backup
+        data to avoid duplicating offsets that are already saved.
+        
+        Args:
+            binary_name: Name of the binary to backup
+            changes: List of patch changes to save original bytes for
+            
+        Note:
+            Skips offsets that are already in the backup file. Shows warnings
+            if reading bytes fails but does not interrupt execution.
+        """
         backup_path = self.get_backup_path(binary_name)
         _, binary = self.binary_files[binary_name]
 
@@ -568,7 +714,20 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Warning", f"Failed to save backup: {e}")
 
     def restore_original_bytes(self, binary_name: str) -> bool:
-        """Restore original bytes from backup"""
+        """Restore original bytes from backup.
+        
+        Reads the backup YAML file and restores all original byte values
+        to their original locations in the binary.
+        
+        Args:
+            binary_name: Name of the binary to restore
+            
+        Returns:
+            True if restoration was successful, False otherwise
+            
+        Note:
+            Shows warnings if backup file doesn't exist or restoration fails.
+        """
         backup_path = self.get_backup_path(binary_name)
 
         if not backup_path.exists():
@@ -599,7 +758,20 @@ class MainWindow(QMainWindow):
             return False
 
     def apply_patches(self) -> None:
-        """Apply all enabled patches to their respective binaries"""
+        """Apply all enabled patches to their respective binaries.
+        
+        Processes all patches in the current configuration:
+        - For editable patches: Reads value from input widget, applies formulas,
+          and writes to all change locations
+        - For checkbox patches: Applies or restores based on checkbox state
+        
+        Saves original bytes before first patch application. Writes all modified
+        binaries to disk after processing. Shows success/error messages.
+        
+        Note:
+            Only processes patches where required binaries are loaded and
+            patch widgets are enabled. Skips patches with validation errors.
+        """
         try:
             modified_binaries = set()
 
@@ -799,7 +971,21 @@ class MainWindow(QMainWindow):
     def select_binary(
         self, name: str, result_object: QLineEdit, default: Optional[str] = None
     ) -> None:
-        """Select and load a binary file"""
+        """Select and load a binary file.
+        
+        Opens a file dialog to select a PE binary file, loads it using pefile,
+        and updates the UI. Closes any previously loaded binary with the same name.
+        Updates patch UI and button state after loading.
+        
+        Args:
+            name: Name identifier for the binary
+            result_object: QLineEdit widget to display the selected file path
+            default: Optional default filter name for the file dialog
+            
+        Note:
+            Shows error messages if file is invalid PE format or cannot be opened.
+            Saves settings after successful load.
+        """
         selected_file, _ = QFileDialog.getOpenFileName(
             self,
             f"Select {name} binary",
@@ -831,14 +1017,29 @@ class MainWindow(QMainWindow):
                 result_object.setText("<empty>")
 
     def update_patch_button_state(self) -> None:
-        """Enable patch button if at least one patch has its binary loaded"""
+        """Enable patch button if at least one patch has its binary loaded.
+        
+        Checks all patches to see if any have their required binaries loaded
+        and are enabled. Enables the patch button if at least one such patch exists.
+        """
         has_enabled_patch = any(
             patch.widget.isEnabled() for patch in self.patches.values()
         )
         self.patch_btn.setEnabled(has_enabled_patch)
 
     def select_config_dir(self, value: Optional[str] = None) -> None:
-        """Select configuration directory"""
+        """Select configuration directory.
+        
+        Sets the configuration directory and populates the config file combo box
+        with all YAML/YML files found in that directory. Clears current UI state.
+        
+        Args:
+            value: Optional directory path to use directly. If None, opens file dialog.
+            
+        Note:
+            Validates that the path exists and is a directory. Shows warnings
+            if no config files are found. Saves the directory to settings.
+        """
         if value:
             selected_path = value
         else:
@@ -866,7 +1067,11 @@ class MainWindow(QMainWindow):
         self.config_dir = str(config_path)
         self.save_settings()
 
+        # Block signals while clearing and populating to avoid triggering config_changed
+        self.config_files_cbox.blockSignals(True)
         self.config_files_cbox.clear()
+        self.config_files_cbox.blockSignals(False)
+        
         self.clear_ui()
 
         config_files = list(config_path.glob("*.y?ml"))
@@ -874,11 +1079,40 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Warning", "No config files found in directory!")
             return
 
+        # Block signals while adding items and restoring selection
+        self.config_files_cbox.blockSignals(True)
         for config in sorted(config_files):
             self.config_files_cbox.addItem(config.stem, str(config))
+        
+        # Restore last selected config if it exists in this directory
+        restored_index = -1
+        if self.saved_selected_config:
+            saved_path = Path(self.saved_selected_config)
+            if saved_path.exists():
+                # Normalize paths for comparison
+                saved_resolved = saved_path.resolve()
+                for i in range(self.config_files_cbox.count()):
+                    item_path = Path(self.config_files_cbox.itemData(i))
+                    if item_path.exists() and item_path.resolve() == saved_resolved:
+                        # Set index while signals are blocked
+                        self.config_files_cbox.setCurrentIndex(i)
+                        restored_index = i
+                        break
+        
+        # Unblock signals
+        self.config_files_cbox.blockSignals(False)
+        
+        # If we restored a config, manually trigger the change handler
+        # (setCurrentIndex while blocked doesn't trigger the signal)
+        if restored_index != -1:
+            self.config_changed(restored_index)
 
     def clear_ui(self) -> None:
-        """Clear all UI elements and close loaded binaries"""
+        """Clear all UI elements and close loaded binaries.
+        
+        Clears all patch and file UI layouts, closes all loaded binary files,
+        and disables the patch button. Used when switching configurations.
+        """
         self.patch_btn.setEnabled(False)
         self.clear_layout(self.patches_layout)
         self.patches.clear()
@@ -889,7 +1123,18 @@ class MainWindow(QMainWindow):
             self._close_binary(binary_name)
 
     def config_changed(self, index: int) -> None:
-        """Handle configuration file selection change"""
+        """Handle configuration file selection change.
+        
+        Loads the selected YAML configuration file, validates it, and updates
+        the UI with the new configuration's files and patches.
+        
+        Args:
+            index: Index of the selected item in the config combo box (-1 if none)
+            
+        Note:
+            Shows error messages if file doesn't exist, is invalid YAML, or
+            has invalid configuration format. Clears UI before loading new config.
+        """
         if index == -1:
             return
 
@@ -918,6 +1163,10 @@ class MainWindow(QMainWindow):
 
             # Show patches (disabled initially)
             self.update_patches_ui(self.current_config.patches)
+            
+            # Save selected config (use resolved absolute path for consistency)
+            self.saved_selected_config = str(config_path.resolve())
+            self.save_settings()
         except (IOError, OSError) as e:
             QMessageBox.critical(self, "Error", f"Failed to read config file: {str(e)}")
         except yaml.YAMLError as e:
@@ -932,7 +1181,14 @@ class MainWindow(QMainWindow):
     def clear_layout(
         self, layout: Union[QVBoxLayout, QHBoxLayout, QGridLayout]
     ) -> None:
-        """Recursively clear all widgets from a layout"""
+        """Recursively clear all widgets from a layout.
+        
+        Removes all widgets and nested layouts from the given layout,
+        scheduling them for deletion. Handles nested layouts recursively.
+        
+        Args:
+            layout: The layout to clear (QVBoxLayout, QHBoxLayout, or QGridLayout)
+        """
         while layout.count():
             item = layout.takeAt(0)
 
@@ -942,6 +1198,22 @@ class MainWindow(QMainWindow):
                 self.clear_layout(item.layout())
 
     def update_patches_ui(self, patches: List[Patch]):
+        """Update the patches UI with the given list of patches.
+        
+        Clears existing patches and creates new UI elements for each patch:
+        - Creates group boxes for each patch in a 2-column grid
+        - For editable patches: Creates text input widgets with current values
+        - For checkbox patches: Creates checkboxes with current patch state
+        - Shows location information and required binaries status
+        - Enables/disables patches based on whether required binaries are loaded
+        
+        Args:
+            patches: List of Patch objects to display in the UI
+            
+        Note:
+            Patches are arranged in a grid with 2 columns. Shows warnings
+            for patches that fail to process but continues with others.
+        """
         self.clear_layout(self.patches_layout)
         self.patches.clear()
 
@@ -950,6 +1222,10 @@ class MainWindow(QMainWindow):
                 required_binaries = self._get_patch_required_binaries(patch)
 
                 patch_group = QGroupBox(patch.name)
+                # Prevent vertical expansion - only take space needed
+                patch_group.setSizePolicy(
+                    QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum
+                )
 
                 # Set description as tooltip if available
                 if patch.description:
@@ -1172,7 +1448,7 @@ class MainWindow(QMainWindow):
                 # Add to grid: row = idx // 2, column = idx % 2
                 row = idx // 2
                 col = idx % 2
-                self.patches_layout.addWidget(patch_group, row, col)
+                self.patches_layout.addWidget(patch_group, row, col,1,1, Qt.AlignmentFlag.AlignTop)
                 self.patches[patch.name] = patch
             except Exception as e:
                 QMessageBox.warning(
@@ -1183,6 +1459,19 @@ class MainWindow(QMainWindow):
         self.update_patch_button_state()
 
     def update_binary_ui(self, files: Dict[str, BinaryFile]):
+        """Update the binary files UI with the given file configuration.
+        
+        Clears existing file UI and creates input widgets for each binary file
+        defined in the configuration. Attempts to load saved binary paths
+        from settings if they exist and are valid PE files.
+        
+        Args:
+            files: Dictionary mapping binary names to BinaryFile configurations
+            
+        Note:
+            Creates a label, read-only text field, and select button for each binary.
+            Automatically loads binaries from saved paths if they exist and are valid.
+        """
         self.clear_layout(self.files_layout)
         self.binary_files.clear()
 
@@ -1238,7 +1527,16 @@ class MainWindow(QMainWindow):
         self.files_layout.addStretch()
 
     def init_ui(self) -> None:
-        """Initialize the user interface"""
+        """Initialize the user interface.
+        
+        Creates and arranges all UI components:
+        - Config group: Combo box for config files and directory selector
+        - Files group: Scrollable area for binary file selectors
+        - Patches group: Scrollable grid area for patch group boxes
+        - Patch button: Button to apply all enabled patches
+        
+        Sets up layouts, scroll areas, and connects signals to handlers.
+        """
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
 
@@ -1307,7 +1605,11 @@ class MainWindow(QMainWindow):
 
 
 def main() -> None:
-    """Main entry point for the application"""
+    """Main entry point for the application.
+    
+    Creates the QApplication, sets the Fusion style, creates and shows
+    the main window, then starts the event loop.
+    """
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     window = MainWindow()
