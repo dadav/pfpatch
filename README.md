@@ -1,5 +1,7 @@
 # Private Files Patcher
 
+![UI](ui.png)
+
 A graphical tool for patching Windows PE (Portable Executable) binary files. It allows you to modify binary files by changing specific byte values at given offsets or by searching for patterns.
 
 ## Features
@@ -27,6 +29,7 @@ Extract and run the executable. On first run, bundled patch files will be copied
 ### From Source
 
 Requirements:
+
 - Python 3.12 or higher
 - pip or uv package manager
 
@@ -219,6 +222,7 @@ patches:
 ```
 
 Pattern format:
+
 - Hex bytes separated by spaces
 - `??` represents a wildcard byte (matches any value)
 - Example: `"48 8B 05 ?? ?? ?? ??"` matches `48 8B 05` followed by any 4 bytes
@@ -287,6 +291,7 @@ The key difference between `formula` and `input_formula`:
 - **`formula`**: Applied **per change** to calculate the final value written to each offset. Each change can have a different formula.
 
 Processing order when applying a patch:
+
 1. User enters value (e.g., "5" days)
 2. `input_formula` converts to base stored value (e.g., `value * 86400` = 432000 seconds)
 3. `formula` (per change) calculates final value (e.g., `value * 2` = 864000)
@@ -310,9 +315,10 @@ patches:
 ```
 
 User enters "10":
-- `input_formula` converts: 10 * 100 = 1000 (base stored value)
-- First change: 1000 * 0x1D0 = 465920 (written to 0x54d6da)
-- Second change: 1000 * 0x200 = 524288 (written to 0x54d6e0)
+
+- `input_formula` converts: 10 \* 100 = 1000 (base stored value)
+- First change: 1000 \* 0x1D0 = 465920 (written to 0x54d6da)
+- Second change: 1000 \* 0x200 = 524288 (written to 0x54d6e0)
 
 #### Complex Example
 
@@ -335,14 +341,17 @@ patches:
         size: 4
         formula: "value * 2"
 ```
+
 ## Backup and Restore
 
 The tool automatically creates backups before applying patches:
+
 - Backup files are stored in the `backups` directory
 - Format: `{binary_name}_backup.yaml`
 - Contains original byte values at each patched offset
 
 To restore:
+
 - For editable patches: Clear the value and apply
 - For non-editable patches: Uncheck the checkbox and apply
 
@@ -351,6 +360,7 @@ Backups are preserved even if you modify the same offset multiple times.
 ## Settings
 
 Settings are saved in `settings.yml`:
+
 - Binary file paths (persisted across sessions)
 - Last selected configuration directory
 
