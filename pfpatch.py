@@ -34,7 +34,7 @@ class PatchChange(BaseModel):
     """Represents a single byte change in a patch"""
 
     file: Optional[str] = None
-    offset: Optional[int] = None  # Either offset or pattern must be provided
+    offset: Optional[Union[int, str]] = None  # Either offset or pattern must be provided. Can be int or expression like "0x12345 + 4"
     pattern: Optional[str] = (
         None  # Hex pattern to search for (e.g., "48 8B 05 ?? ?? ?? ??")
     )
@@ -52,6 +52,38 @@ class PatchChange(BaseModel):
     input_formula: Optional[str] = (
         None  # Formula to convert display value to stored value (e.g., "value * 86400" for days to seconds)
     )
+
+    @field_validator("offset")
+    @classmethod
+    def validate_offset(cls, v: Optional[Union[int, str]]) -> Optional[int]:
+        """Parse offset - can be int or expression like '0x12345 + 4'"""
+        if v is None:
+            return v
+        if isinstance(v, int):
+            return v
+        if isinstance(v, str):
+            v = v.strip()
+            if not v:
+                return None
+            # Try to parse as expression (e.g., "0x12345 + 4" or "0x12345 + 2")
+            # First check if it contains arithmetic operators
+            if "+" in v or "-" in v or "*" in v or "/" in v:
+                try:
+                    # Evaluate the expression safely with restricted globals
+                    # Only allow basic arithmetic operations
+                    result = eval(v, {"__builtins__": {}}, {})
+                    if not isinstance(result, (int, float)):
+                        raise ValueError(f"Offset expression must evaluate to a number: {v}")
+                    return int(result)
+                except Exception:
+                    raise ValueError(f"Invalid offset expression: {v}. Must be valid arithmetic like '0x12345 + 4'")
+            else:
+                # No operators, try parsing as simple hex/decimal int
+                try:
+                    return int(v, 0)  # 0 allows auto-detection of hex (0x) or decimal
+                except ValueError:
+                    raise ValueError(f"Invalid offset format: {v}. Must be int or expression like '0x12345 + 4'")
+        return v
 
     @field_validator("value")
     @classmethod

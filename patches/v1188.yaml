@@ -16,12 +16,12 @@ patches:
     editable: true
     file: sro_client
     changes:
-      - offset: 0x85de6d
+      - offset: 0x85de67 + 6
         size: 1
-      - offset: 0x40F47F
+      - offset: 0x40F47C + 2
         size: 1
         file: shardmanager
-      - offset: 0x429B86
+      - offset: 0x429B83 + 2
         size: 1
         file: shardmanager
   - name: Max job level
@@ -30,7 +30,7 @@ patches:
     editable: true
     file: gameserver
     changes:
-      - offset: 0x60de6c
+      - offset: 0x60de69 + 3
         size: 1
   - name: Job leaving penalty
     description: |
@@ -38,7 +38,7 @@ patches:
     editable: true
     file: gameserver
     changes:
-      - offset: 0x4e816d
+      - offset: 0x4e816c + 1
         size: 4
         display_formula: "value / (24 * 60 * 60)"
         input_formula: "value * 24 * 60 * 60"
@@ -48,15 +48,15 @@ patches:
     editable: true
     file: gameserver
     changes:
-      - offset: 0x5c3f95
+      - offset: 0x5c3f94 + 1
         size: 4
         display_formula: "value / (24 * 60 * 60)"
         input_formula: "value * 24 * 60 * 60"
-      - offset: 0x9df195
+      - offset: 0x9df194 + 1
         size: 4
         display_formula: "value / (24 * 60 * 60)"
         input_formula: "value * 24 * 60 * 60"
-      - offset: 0x5c8b3e
+      - offset: 0x5c8b3d + 1
         size: 4
         display_formula: "value / (24 * 60 * 60)"
         input_formula: "value * 24 * 60 * 60"
@@ -67,18 +67,21 @@ patches:
     file: gameserver
     changes:
       # player
-      - offset: 0x4e52c9
+      - offset: 0x4e52c7 + 2
         size: 1
       # pet
-      - offset: 0x4d641e
+      - offset: 0x4d641b + 3
         size: 1
+      - offset: 0x8A99A2 + 2
+        size: 1
+        file: sro_client
   - name: Quest level cap
     description: |
       The max quest level on this server.
     editable: true
     file: sro_client
     changes:
-      - offset: 0x955137
+      - offset: 0x955134 + 3
         size: 1
   - name: Party matching filter level
     description: |
@@ -86,21 +89,21 @@ patches:
     editable: true
     file: sro_client
     changes:
-      - offset: 0x73940f
+      - offset: 0x73940e + 1
         size: 1
-      - offset: 0x739454
+      - offset: 0x739453 + 1
         size: 1
-      - offset: 0x73afaf
+      - offset: 0x73afae + 1
         size: 1
-      - offset: 0x73b014
+      - offset: 0x73b013 + 1
         size: 1
-      - offset: 0x73b031
+      - offset: 0x73b030 + 1
         size: 1
-      - offset: 0x73fa4d
+      - offset: 0x73fa4c + 1
         size: 1
-      - offset: 0x73fab0
+      - offset: 0x73FAAF + 1
         size: 1
-      - offset: 0x73facd
+      - offset: 0x73facc + 1
         size: 1
   - name: Fix gameserver crash after level 110
     description: |
@@ -108,7 +111,7 @@ patches:
     editable: false
     file: gameserver
     changes:
-      - offset: 0x4e5475
+      - offset: 0x4E5471 + 4
         value: "E0"
   - name: Max mastery level
     description: |
@@ -116,9 +119,9 @@ patches:
     editable: true
     file: gameserver
     changes:
-      - offset: 0x59c5e7
+      - offset: 0x59c5e6 + 1
         size: 4
-      - offset: 0x6A51BC
+      - offset: 0x6A51BC + 1
         size: 4
         file: sro_client
   - name: Party mobs spawn probability
@@ -127,7 +130,7 @@ patches:
     editable: true
     file: gameserver
     changes:
-      - offset: 0x5608e4
+      - offset: 0x5608e2 + 2
         size: 1
   - name: Party mobs member requirement
     description: |
@@ -135,7 +138,7 @@ patches:
     editable: true
     file: gameserver
     changes:
-      - offset: 0x558F24
+      - offset: 0x558F20 + 4
         size: 1
   - name: Gameserver spawn limit
     description: |
@@ -143,15 +146,15 @@ patches:
     editable: true
     file: gameserver
     changes:
-      - offset: 0x54d60a
+      - offset: 0x54d609 + 1
         size: 4
-      - offset: 0x54d61f
+      - offset: 0x54d61c + 3
         size: 4
-      - offset: 0x54d655
+      - offset: 0x54d654 + 1
         size: 4
-      - offset: 0x54d664
+      - offset: 0x54d662 + 2
         size: 4
-      - offset: 0x54d6da
+      - offset: 0x54d6d8 + 2
         size: 4
         formula: "value * 0x1D0"
   - name: Disable Quest:RaiseEvent errors
@@ -168,7 +171,7 @@ patches:
     editable: false
     file: gameserver
     changes:
-      - offset: 0x4142E2
+      - offset: 0x4142E8
         value: "90 90"
   - name: Disable login captcha
     description: |
@@ -176,5 +179,5 @@ patches:
     editable: false
     file: gateway
     changes:
-      - offset: 0x40509d
+      - offset: 0x40509c + 1
         value: "30 6e 40"
