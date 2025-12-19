@@ -184,18 +184,25 @@ class Patch(BaseModel):
                     f"Change {i} must specify a file when patch has no default file"
                 )
 
-        # If editable, all changes must have size specified
+        # If editable, changes can have either size (editable) or value (fixed)
         if info.data.get("editable", False):
-            sizes = []
+            editable_sizes = []
             for i, change in enumerate(v):
-                if change.size is None:
-                    raise ValueError(f"Editable patch change {i} must specify size")
-                sizes.append(change.size)
+                if change.size is not None and change.value is not None:
+                    raise ValueError(
+                        f"Editable patch change {i} cannot have both size and value"
+                    )
+                if change.size is None and change.value is None:
+                    raise ValueError(
+                        f"Editable patch change {i} must specify either size (for editable) or value (for fixed)"
+                    )
+                if change.size is not None:
+                    editable_sizes.append(change.size)
 
-            # All changes should have the same size for consistency
-            if len(set(sizes)) > 1:
+            # All editable changes (with size) should have the same size for consistency
+            if len(set(editable_sizes)) > 1:
                 raise ValueError(
-                    "All changes in an editable patch must have the same size"
+                    "All editable changes (with size) in an editable patch must have the same size"
                 )
         else:
             for i, change in enumerate(v):
@@ -831,48 +838,56 @@ class MainWindow(QMainWindow):
                 if any(b not in self.binary_files for b in required_binaries):
                     continue
 
-                # Skip if patch widget is disabled
-                if not patch.widget.isEnabled():
+                # Skip if patch widget is disabled (only for editable patches with editable changes)
+                if patch.editable and patch.widget is not None and not patch.widget.isEnabled():
                     continue
 
                 if patch.editable:
                     try:
-                        new_value_text = patch.widget.text().strip()
-                        if not new_value_text:
-                            # If empty, try to restore original if backup exists
-                            for binary_name in required_binaries:
-                                if self.is_binary_patched(binary_name):
-                                    if self.restore_original_bytes(binary_name):
-                                        modified_binaries.add(binary_name)
-                            continue
+                        # Separate changes into editable (with size) and fixed (with value)
+                        editable_changes = [c for c in patch.changes if c.size is not None]
+                        fixed_changes = [c for c in patch.changes if c.value is not None]
 
-                        display_value_int = int(new_value_text)
-
-                        # Get size from first change (all should have same size per validation)
-                        if not patch.changes or patch.changes[0].size is None:
-                            QMessageBox.warning(
-                                self,
-                                "Error",
-                                f"Patch {patch_name} has no size specified",
-                            )
-                            continue
-                        size = patch.changes[0].size
-                        first_change = patch.changes[0]
-
-                        # Convert display value to stored value using input_formula if specified
-                        stored_value_int = display_value_int
-                        if first_change.input_formula:
-                            try:
-                                stored_value_int = self._evaluate_formula(
-                                    first_change.input_formula, display_value_int
-                                )
-                            except ValueError as e:
+                        # Handle editable changes (if any)
+                        stored_value_int = None
+                        if editable_changes:
+                            if patch.widget is None:
                                 QMessageBox.warning(
                                     self,
                                     "Error",
-                                    f"Invalid input formula in patch {patch_name}: {e}",
+                                    f"Patch {patch_name} has editable changes but no input widget",
                                 )
                                 continue
+
+                            new_value_text = patch.widget.text().strip()
+                            if not new_value_text:
+                                # If empty, try to restore original if backup exists
+                                for binary_name in required_binaries:
+                                    if self.is_binary_patched(binary_name):
+                                        if self.restore_original_bytes(binary_name):
+                                            modified_binaries.add(binary_name)
+                                continue
+
+                            display_value_int = int(new_value_text)
+
+                            # Get size from first editable change (all should have same size per validation)
+                            size = editable_changes[0].size
+                            first_editable_change = editable_changes[0]
+
+                            # Convert display value to stored value using input_formula if specified
+                            stored_value_int = display_value_int
+                            if first_editable_change.input_formula:
+                                try:
+                                    stored_value_int = self._evaluate_formula(
+                                        first_editable_change.input_formula, display_value_int
+                                    )
+                                except ValueError as e:
+                                    QMessageBox.warning(
+                                        self,
+                                        "Error",
+                                        f"Invalid input formula in patch {patch_name}: {e}",
+                                    )
+                                    continue
 
                         # Apply value to all changes (with formulas if specified)
                         success = True
@@ -892,62 +907,88 @@ class MainWindow(QMainWindow):
                                     success = False
                                     break
 
-                                if change.size != size:
-                                    QMessageBox.warning(
-                                        self,
-                                        "Error",
-                                        f"Patch {patch_name} has inconsistent sizes",
-                                    )
-                                    success = False
-                                    break
+                                # Handle editable change (with size)
+                                if change.size is not None:
+                                    if stored_value_int is None:
+                                        QMessageBox.warning(
+                                            self,
+                                            "Error",
+                                            f"Patch {patch_name} has editable change but no input value provided",
+                                        )
+                                        success = False
+                                        break
 
-                                # Calculate final value using formula if specified, otherwise use stored value as-is
-                                try:
-                                    final_value_int = self._evaluate_formula(
-                                        change.formula, stored_value_int
-                                    )
-                                except ValueError as e:
-                                    QMessageBox.warning(
-                                        self,
-                                        "Error",
-                                        f"Invalid formula at offset {resolved_offset:#x}: {e}",
-                                    )
-                                    success = False
-                                    break
+                                    if not editable_changes or change.size != editable_changes[0].size:
+                                        QMessageBox.warning(
+                                            self,
+                                            "Error",
+                                            f"Patch {patch_name} has inconsistent sizes",
+                                        )
+                                        success = False
+                                        break
 
-                                # Check for overflow based on size
-                                max_value = (1 << (size * 8)) - 1
-                                if final_value_int > max_value:
-                                    QMessageBox.warning(
-                                        self,
-                                        "Error",
-                                        f"Value {final_value_int} exceeds maximum for {size} byte(s) at offset {resolved_offset:#x}",
-                                    )
-                                    success = False
-                                    break
-                                if final_value_int < 0:
-                                    QMessageBox.warning(
-                                        self,
-                                        "Error",
-                                        f"Value {final_value_int} is negative at offset {resolved_offset:#x}",
-                                    )
-                                    success = False
-                                    break
+                                    # Calculate final value using formula if specified, otherwise use stored value as-is
+                                    try:
+                                        final_value_int = self._evaluate_formula(
+                                            change.formula, stored_value_int
+                                        )
+                                    except ValueError as e:
+                                        QMessageBox.warning(
+                                            self,
+                                            "Error",
+                                            f"Invalid formula at offset {resolved_offset:#x}: {e}",
+                                        )
+                                        success = False
+                                        break
 
-                                try:
-                                    final_value = final_value_int.to_bytes(
-                                        size, byteorder="little"
-                                    )
-                                    addr = self._offset_to_rva(resolved_offset, binary)
-                                    binary.set_bytes_at_rva(addr, final_value)
-                                except Exception as e:
-                                    QMessageBox.warning(
-                                        self,
-                                        "Error",
-                                        f"Failed to apply patch at offset {resolved_offset:#x}: {e}",
-                                    )
-                                    success = False
-                                    break
+                                    # Check for overflow based on size
+                                    max_value = (1 << (change.size * 8)) - 1
+                                    if final_value_int > max_value:
+                                        QMessageBox.warning(
+                                            self,
+                                            "Error",
+                                            f"Value {final_value_int} exceeds maximum for {change.size} byte(s) at offset {resolved_offset:#x}",
+                                        )
+                                        success = False
+                                        break
+                                    if final_value_int < 0:
+                                        QMessageBox.warning(
+                                            self,
+                                            "Error",
+                                            f"Value {final_value_int} is negative at offset {resolved_offset:#x}",
+                                        )
+                                        success = False
+                                        break
+
+                                    try:
+                                        final_value = final_value_int.to_bytes(
+                                            change.size, byteorder="little"
+                                        )
+                                        addr = self._offset_to_rva(resolved_offset, binary)
+                                        binary.set_bytes_at_rva(addr, final_value)
+                                    except Exception as e:
+                                        QMessageBox.warning(
+                                            self,
+                                            "Error",
+                                            f"Failed to apply patch at offset {resolved_offset:#x}: {e}",
+                                        )
+                                        success = False
+                                        break
+
+                                # Handle fixed change (with value)
+                                elif change.value is not None:
+                                    try:
+                                        final_value = bytes.fromhex(change.value)
+                                        addr = self._offset_to_rva(resolved_offset, binary)
+                                        binary.set_bytes_at_rva(addr, final_value)
+                                    except Exception as e:
+                                        QMessageBox.warning(
+                                            self,
+                                            "Error",
+                                            f"Failed to apply fixed value at offset {resolved_offset:#x}: {e}",
+                                        )
+                                        success = False
+                                        break
                             if not success:
                                 break
 
@@ -1297,36 +1338,41 @@ class MainWindow(QMainWindow):
                 )
 
                 if patch.editable:
-                    value_widget = QLineEdit()
-                    value_widget.setEnabled(binaries_loaded)
+                    # Find editable changes (with size) and fixed changes (with value)
+                    editable_changes = [c for c in patch.changes if c.size is not None]
+                    fixed_changes = [c for c in patch.changes if c.value is not None]
 
-                    if binaries_loaded and len(patch.changes) > 0:
-                        first_change = patch.changes[0]
-                        first_binary_name = self._get_change_binary(
-                            first_change, patch.file
-                        )
-                        _, binary = self.binary_files[first_binary_name]
-                        if len(patch.changes) > 0:
-                            # Check if all changes have the same value
-                            if first_change.size is not None:
+                    # Only show input widget if there are editable changes
+                    if editable_changes:
+                        value_widget = QLineEdit()
+                        value_widget.setEnabled(binaries_loaded)
+
+                        if binaries_loaded and len(editable_changes) > 0:
+                            first_editable_change = editable_changes[0]
+                            first_binary_name = self._get_change_binary(
+                                first_editable_change, patch.file
+                            )
+                            _, binary = self.binary_files[first_binary_name]
+                            # Check if all editable changes have the same value
+                            if first_editable_change.size is not None:
                                 try:
                                     first_offset = self._resolve_change_offset(
-                                        first_change, binary
+                                        first_editable_change, binary
                                     )
                                     if first_offset is None:
                                         raise ValueError(
-                                            "Failed to resolve offset for first change"
+                                            "Failed to resolve offset for first editable change"
                                         )
                                     addr = self._offset_to_rva(first_offset, binary)
                                     current = int.from_bytes(
-                                        binary.get_data(addr, first_change.size),
+                                        binary.get_data(addr, first_editable_change.size),
                                         byteorder="little",
                                     )
 
-                                    # Verify all changes have the same value
+                                    # Verify all editable changes have the same value
                                     all_same = True
-                                    for change in patch.changes[1:]:
-                                        if change.size != first_change.size:
+                                    for change in editable_changes[1:]:
+                                        if change.size != first_editable_change.size:
                                             all_same = False
                                             break
                                         change_binary_name = self._get_change_binary(
@@ -1356,10 +1402,10 @@ class MainWindow(QMainWindow):
 
                                     # Apply display formula if specified (convert stored to display format)
                                     display_value = current
-                                    if first_change.display_formula:
+                                    if first_editable_change.display_formula:
                                         try:
                                             display_value = self._evaluate_formula(
-                                                first_change.display_formula, current
+                                                first_editable_change.display_formula, current
                                             )
                                         except Exception:
                                             # If display formula fails, use raw value
@@ -1371,8 +1417,8 @@ class MainWindow(QMainWindow):
                                         # Values differ, show first one with a note
                                         value_widget.setText(str(display_value))
                                         value_widget.setToolTip(
-                                            f"Note: Current values differ across {len(patch.changes)} locations. "
-                                            f"Entering a value will apply it to all locations."
+                                            f"Note: Current values differ across {len(editable_changes)} editable locations. "
+                                            f"Entering a value will apply it to all editable locations."
                                         )
                                 except Exception as e:
                                     QMessageBox.warning(
@@ -1380,17 +1426,25 @@ class MainWindow(QMainWindow):
                                         "Warning",
                                         f"Failed to read current value: {e}",
                                     )
-                    else:
-                        if len(patch.changes) > 1:
-                            value_widget.setPlaceholderText(
-                                f"Load required binaries first (will apply to {len(patch.changes)} locations)"
-                            )
                         else:
-                            value_widget.setPlaceholderText(
-                                "Load required binaries first"
-                            )
+                            if len(editable_changes) > 1:
+                                value_widget.setPlaceholderText(
+                                    f"Load required binaries first (will apply to {len(editable_changes)} editable locations)"
+                                )
+                            else:
+                                value_widget.setPlaceholderText(
+                                    "Load required binaries first"
+                                )
 
-                    patch_layout.addWidget(value_widget)
+                        patch_layout.addWidget(value_widget)
+                        patch.widget = value_widget
+                    else:
+                        # No editable changes, but patch is marked as editable
+                        # This shouldn't happen per validation, but handle gracefully
+                        info_label = QLabel("No editable changes in this patch")
+                        info_label.setStyleSheet("color: gray; font-size: 9pt;")
+                        patch_layout.addWidget(info_label)
+                        patch.widget = None
 
                     # Always show location information
                     location_parts = []
@@ -1415,6 +1469,12 @@ class MainWindow(QMainWindow):
                                         part += f" → {resolved:#x}"
                         else:
                             part = "unknown"
+
+                        # Indicate if change is editable or fixed
+                        if c.size is not None:
+                            part += " [editable]"
+                        elif c.value is not None:
+                            part += " [fixed]"
 
                         if c.formula:
                             part += f" ({c.formula})"
