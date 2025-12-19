@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple, Union
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 from PyQt6.QtWidgets import (
     QApplication,
@@ -34,7 +34,9 @@ class PatchChange(BaseModel):
     """Represents a single byte change in a patch"""
 
     file: Optional[str] = None
-    offset: Optional[Union[int, str]] = None  # Either offset or pattern must be provided. Can be int or expression like "0x12345 + 4"
+    offset: Optional[Union[int, str]] = (
+        None  # Either offset or pattern must be provided. Can be int or expression like "0x12345 + 4"
+    )
     pattern: Optional[str] = (
         None  # Hex pattern to search for (e.g., "48 8B 05 ?? ?? ?? ??")
     )
@@ -73,16 +75,22 @@ class PatchChange(BaseModel):
                     # Only allow basic arithmetic operations
                     result = eval(v, {"__builtins__": {}}, {})
                     if not isinstance(result, (int, float)):
-                        raise ValueError(f"Offset expression must evaluate to a number: {v}")
+                        raise ValueError(
+                            f"Offset expression must evaluate to a number: {v}"
+                        )
                     return int(result)
                 except Exception:
-                    raise ValueError(f"Invalid offset expression: {v}. Must be valid arithmetic like '0x12345 + 4'")
+                    raise ValueError(
+                        f"Invalid offset expression: {v}. Must be valid arithmetic like '0x12345 + 4'"
+                    )
             else:
                 # No operators, try parsing as simple hex/decimal int
                 try:
                     return int(v, 0)  # 0 allows auto-detection of hex (0x) or decimal
                 except ValueError:
-                    raise ValueError(f"Invalid offset format: {v}. Must be int or expression like '0x12345 + 4'")
+                    raise ValueError(
+                        f"Invalid offset format: {v}. Must be int or expression like '0x12345 + 4'"
+                    )
         return v
 
     @field_validator("value")
@@ -839,14 +847,22 @@ class MainWindow(QMainWindow):
                     continue
 
                 # Skip if patch widget is disabled (only for editable patches with editable changes)
-                if patch.editable and patch.widget is not None and not patch.widget.isEnabled():
+                if (
+                    patch.editable
+                    and patch.widget is not None
+                    and not patch.widget.isEnabled()
+                ):
                     continue
 
                 if patch.editable:
                     try:
                         # Separate changes into editable (with size) and fixed (with value)
-                        editable_changes = [c for c in patch.changes if c.size is not None]
-                        fixed_changes = [c for c in patch.changes if c.value is not None]
+                        editable_changes = [
+                            c for c in patch.changes if c.size is not None
+                        ]
+                        fixed_changes = [
+                            c for c in patch.changes if c.value is not None
+                        ]
 
                         # Handle editable changes (if any)
                         stored_value_int = None
@@ -879,7 +895,8 @@ class MainWindow(QMainWindow):
                             if first_editable_change.input_formula:
                                 try:
                                     stored_value_int = self._evaluate_formula(
-                                        first_editable_change.input_formula, display_value_int
+                                        first_editable_change.input_formula,
+                                        display_value_int,
                                     )
                                 except ValueError as e:
                                     QMessageBox.warning(
@@ -918,7 +935,10 @@ class MainWindow(QMainWindow):
                                         success = False
                                         break
 
-                                    if not editable_changes or change.size != editable_changes[0].size:
+                                    if (
+                                        not editable_changes
+                                        or change.size != editable_changes[0].size
+                                    ):
                                         QMessageBox.warning(
                                             self,
                                             "Error",
@@ -964,7 +984,9 @@ class MainWindow(QMainWindow):
                                         final_value = final_value_int.to_bytes(
                                             change.size, byteorder="little"
                                         )
-                                        addr = self._offset_to_rva(resolved_offset, binary)
+                                        addr = self._offset_to_rva(
+                                            resolved_offset, binary
+                                        )
                                         binary.set_bytes_at_rva(addr, final_value)
                                     except Exception as e:
                                         QMessageBox.warning(
@@ -979,7 +1001,9 @@ class MainWindow(QMainWindow):
                                 elif change.value is not None:
                                     try:
                                         final_value = bytes.fromhex(change.value)
-                                        addr = self._offset_to_rva(resolved_offset, binary)
+                                        addr = self._offset_to_rva(
+                                            resolved_offset, binary
+                                        )
                                         binary.set_bytes_at_rva(addr, final_value)
                                     except Exception as e:
                                         QMessageBox.warning(
@@ -1365,7 +1389,9 @@ class MainWindow(QMainWindow):
                                         )
                                     addr = self._offset_to_rva(first_offset, binary)
                                     current = int.from_bytes(
-                                        binary.get_data(addr, first_editable_change.size),
+                                        binary.get_data(
+                                            addr, first_editable_change.size
+                                        ),
                                         byteorder="little",
                                     )
 
@@ -1405,7 +1431,8 @@ class MainWindow(QMainWindow):
                                     if first_editable_change.display_formula:
                                         try:
                                             display_value = self._evaluate_formula(
-                                                first_editable_change.display_formula, current
+                                                first_editable_change.display_formula,
+                                                current,
                                             )
                                         except Exception:
                                             # If display formula fails, use raw value
