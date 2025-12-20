@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple, Union
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 from PyQt6.QtWidgets import (
     QApplication,
@@ -896,7 +896,7 @@ class MainWindow(QMainWindow):
                             # Get first editable change for input_formula (each change uses its own size when writing)
                             first_editable_change = editable_changes[0]
                             data_type = first_editable_change.type or "int"
-                            
+
                             # Parse input value based on type
                             try:
                                 if data_type in ("double", "float"):
@@ -984,7 +984,9 @@ class MainWindow(QMainWindow):
                                             break
                                         try:
                                             final_value_float = float(final_value_calc)
-                                            final_value = struct.pack("<d", final_value_float)
+                                            final_value = struct.pack(
+                                                "<d", final_value_float
+                                            )
                                         except (ValueError, OverflowError) as e:
                                             QMessageBox.warning(
                                                 self,
@@ -1005,7 +1007,9 @@ class MainWindow(QMainWindow):
                                             break
                                         try:
                                             final_value_float = float(final_value_calc)
-                                            final_value = struct.pack("<f", final_value_float)
+                                            final_value = struct.pack(
+                                                "<f", final_value_float
+                                            )
                                         except (ValueError, OverflowError) as e:
                                             QMessageBox.warning(
                                                 self,
@@ -1017,7 +1021,7 @@ class MainWindow(QMainWindow):
                                     else:
                                         # Integer type
                                         final_value_int = int(final_value_calc)
-                                        
+
                                         # Check for overflow based on size
                                         max_value = (1 << (change.size * 8)) - 1
                                         if final_value_int > max_value:
@@ -1508,20 +1512,26 @@ class MainWindow(QMainWindow):
                                             if change.size != 8:
                                                 all_same = False
                                                 break
-                                            change_value = struct.unpack("<d", change_data_bytes)[0]
+                                            change_value = struct.unpack(
+                                                "<d", change_data_bytes
+                                            )[0]
                                         elif change_data_type == "float":
                                             if change.size != 4:
                                                 all_same = False
                                                 break
-                                            change_value = struct.unpack("<f", change_data_bytes)[0]
+                                            change_value = struct.unpack(
+                                                "<f", change_data_bytes
+                                            )[0]
                                         else:
                                             change_value = int.from_bytes(
                                                 change_data_bytes, byteorder="little"
                                             )
                                         # For floats/doubles, use approximate comparison due to floating point precision
                                         first_type = first_editable_change.type or "int"
-                                        if (change_data_type in ("double", "float") or 
-                                            first_type in ("double", "float")):
+                                        if change_data_type in (
+                                            "double",
+                                            "float",
+                                        ) or first_type in ("double", "float"):
                                             if abs(change_value - current) > 1e-10:
                                                 all_same = False
                                                 break
