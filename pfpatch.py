@@ -58,6 +58,9 @@ class PatchChange(BaseModel):
     input_formula: Optional[str] = (
         None  # Formula to convert display value to stored value (e.g., "value * 86400" for days to seconds)
     )
+    repeat: Optional[Union[int, str]] = (
+        None  # Number of times to repeat writing the value at consecutive offsets (e.g., 0x14FF or 5375)
+    )
 
     @field_validator("offset")
     @classmethod
@@ -169,6 +172,28 @@ class PatchChange(BaseModel):
         if v not in ("int", "double", "float"):
             raise ValueError(f"Invalid type: {v}. Must be 'int', 'double', or 'float'")
         return v
+
+    @field_validator("repeat")
+    @classmethod
+    def validate_repeat(cls, v: Optional[Union[int, str]]) -> Optional[int]:
+        """Validate repeat field - must be a positive integer"""
+        if v is None:
+            return None
+        if isinstance(v, int):
+            if v <= 0:
+                raise ValueError(f"Repeat must be a positive integer, got {v}")
+            return v
+        if isinstance(v, str):
+            v = v.strip()
+            try:
+                # Try parsing as hex (0x prefix) or decimal
+                result = int(v, 0)  # 0 allows auto-detection of hex (0x) or decimal
+                if result <= 0:
+                    raise ValueError(f"Repeat must be a positive integer, got {result}")
+                return result
+            except ValueError:
+                raise ValueError(f"Invalid repeat value: {v}. Must be a positive integer or hex value like '0x14FF'")
+        raise ValueError(f"Invalid repeat type: {type(v)}. Must be int or str")
 
     @model_validator(mode="after")
     def validate_offset_or_pattern(self) -> "PatchChange":
@@ -743,31 +768,55 @@ class MainWindow(QMainWindow):
                 )
                 return
 
-            # Skip if this offset is already saved
-            if resolved_offset in existing_offsets:
-                continue
+            # Handle repeat: backup all offsets that will be modified
+            if change.value is not None and change.repeat is not None:
+                value_size = len(bytes.fromhex(change.value))
+                for i in range(change.repeat):
+                    current_offset = resolved_offset + (i * value_size)
+                    # Skip if this offset is already saved
+                    if current_offset in existing_offsets:
+                        continue
+                    addr = self._offset_to_rva(current_offset, binary)
+                    try:
+                        original_bytes = binary.get_data(addr, value_size)
+                        new_data.append(
+                            {"offset": current_offset, "value": original_bytes.hex()}
+                        )
+                        existing_offsets.add(current_offset)
+                    except Exception as e:
+                        QMessageBox.warning(
+                            self,
+                            "Warning",
+                            f"Failed to read original bytes at offset {current_offset:#x}: {e}",
+                        )
+                        return
+            else:
+                # Single offset backup (no repeat)
+                # Skip if this offset is already saved
+                if resolved_offset in existing_offsets:
+                    continue
 
-            addr = self._offset_to_rva(resolved_offset, binary)
-            size = (
-                len(bytes.fromhex(change.value))
-                if change.value is not None
-                else change.size
-            )
-            if size is None:
-                continue
-            try:
-                original_bytes = binary.get_data(addr, size)
-                new_data.append(
-                    {"offset": resolved_offset, "value": original_bytes.hex()}
+                addr = self._offset_to_rva(resolved_offset, binary)
+                size = (
+                    len(bytes.fromhex(change.value))
+                    if change.value is not None
+                    else change.size
                 )
-                existing_offsets.add(resolved_offset)
-            except Exception as e:
-                QMessageBox.warning(
-                    self,
-                    "Warning",
-                    f"Failed to read original bytes at offset {resolved_offset:#x}: {e}",
-                )
-                return
+                if size is None:
+                    continue
+                try:
+                    original_bytes = binary.get_data(addr, size)
+                    new_data.append(
+                        {"offset": resolved_offset, "value": original_bytes.hex()}
+                    )
+                    existing_offsets.add(resolved_offset)
+                except Exception as e:
+                    QMessageBox.warning(
+                        self,
+                        "Warning",
+                        f"Failed to read original bytes at offset {resolved_offset:#x}: {e}",
+                    )
+                    return
 
         # Merge existing and new data
         merged_data = existing_data + new_data
@@ -1072,10 +1121,25 @@ class MainWindow(QMainWindow):
                                 elif change.value is not None:
                                     try:
                                         final_value = bytes.fromhex(change.value)
-                                        addr = self._offset_to_rva(
-                                            resolved_offset, binary
-                                        )
-                                        binary.set_bytes_at_rva(addr, final_value)
+                                        
+                                        # Handle repeat: write the value multiple times at consecutive offsets
+                                        if change.repeat is not None:
+                                            repeat_count = change.repeat
+                                            value_size = len(final_value)
+                                            
+                                            # Write the value 'repeat' times at consecutive offsets
+                                            for i in range(repeat_count):
+                                                current_offset = resolved_offset + (i * value_size)
+                                                addr = self._offset_to_rva(
+                                                    current_offset, binary
+                                                )
+                                                binary.set_bytes_at_rva(addr, final_value)
+                                        else:
+                                            # Single write (no repeat)
+                                            addr = self._offset_to_rva(
+                                                resolved_offset, binary
+                                            )
+                                            binary.set_bytes_at_rva(addr, final_value)
                                     except Exception as e:
                                         QMessageBox.warning(
                                             self,

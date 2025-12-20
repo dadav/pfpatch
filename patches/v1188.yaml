@@ -13,7 +13,7 @@ patches:
   - name: Max characters per account
     description: |
       Adjust the number of characters per account
-      ("SRO_VT_SHARD.dbo._AddNewChar" MODIFICATION REQUIRED)
+      ("SRO_VT_SHARD.dbo._AddNewChar" MODIFICATION REQUIRED: remove if condition)
     editable: true
     file: sro_client
     changes:
@@ -73,6 +73,27 @@ patches:
     changes:
       - offset: 0x45055C
         value: "EB 30 90 90 90"
+  - name: Multiclient
+    description: |
+      Enables multiclient
+    editable: false
+    file: sro_client
+    changes:
+      - offset: 0x83297F
+        value: "EB"
+  - name: Remove xtrap
+    description: |
+      Removes xtrap...
+    editable: false
+    file: sro_client
+    changes:
+      - offset: 0x844AEF
+        value: "EB"
+      - offset: 0x8328C3
+        value: "90 90 90 90 90"
+      - offset: 0xB7AEF0
+        value: "90"
+        repeat: 0x14FF
   - name: Max job level
     description: |
       Adjust the max job level.
