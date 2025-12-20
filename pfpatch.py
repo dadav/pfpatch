@@ -917,7 +917,7 @@ class MainWindow(QMainWindow):
                                 try:
                                     stored_value_int = self._evaluate_formula(
                                         first_editable_change.input_formula,
-                                        display_value_int,
+                                        display_value,
                                     )
                                 except ValueError as e:
                                     QMessageBox.warning(
