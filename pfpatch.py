@@ -2,6 +2,7 @@ import sys
 import yaml
 import pefile
 import shutil
+import struct
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple, Union
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -45,6 +46,9 @@ class PatchChange(BaseModel):
     )
     value: Optional[str] = None
     size: Optional[int] = None
+    type: Optional[str] = (
+        "int"  # Data type: "int" (default), "float" (IEEE 754 single-precision, 4 bytes), or "double" (IEEE 754 double-precision, 8 bytes)
+    )
     formula: Optional[str] = (
         None  # Formula/expression for editable patches (e.g., "value * 0x10", "value + 5")
     )
@@ -155,6 +159,17 @@ class PatchChange(BaseModel):
             raise ValueError("Display/input formula must contain 'value' variable")
         return v
 
+    @field_validator("type")
+    @classmethod
+    def validate_type(cls, v: Optional[str]) -> Optional[str]:
+        """Validate type field"""
+        if v is None:
+            return "int"
+        v = v.strip().lower()
+        if v not in ("int", "double", "float"):
+            raise ValueError(f"Invalid type: {v}. Must be 'int', 'double', or 'float'")
+        return v
+
     @model_validator(mode="after")
     def validate_offset_or_pattern(self) -> "PatchChange":
         """Validate that either offset or pattern is provided"""
@@ -194,7 +209,6 @@ class Patch(BaseModel):
 
         # If editable, changes can have either size (editable) or value (fixed)
         if info.data.get("editable", False):
-            editable_sizes = []
             for i, change in enumerate(v):
                 if change.size is not None and change.value is not None:
                     raise ValueError(
@@ -204,14 +218,9 @@ class Patch(BaseModel):
                     raise ValueError(
                         f"Editable patch change {i} must specify either size (for editable) or value (for fixed)"
                     )
-                if change.size is not None:
-                    editable_sizes.append(change.size)
 
-            # All editable changes (with size) should have the same size for consistency
-            if len(set(editable_sizes)) > 1:
-                raise ValueError(
-                    "All editable changes (with size) in an editable patch must have the same size"
-                )
+            # Note: Editable changes can have different sizes when using formulas
+            # Each change will use its own size when reading/writing
         else:
             for i, change in enumerate(v):
                 if change.value is None:
@@ -884,14 +893,26 @@ class MainWindow(QMainWindow):
                                             modified_binaries.add(binary_name)
                                 continue
 
-                            display_value_int = int(new_value_text)
-
-                            # Get size from first editable change (all should have same size per validation)
-                            size = editable_changes[0].size
+                            # Get first editable change for input_formula (each change uses its own size when writing)
                             first_editable_change = editable_changes[0]
+                            data_type = first_editable_change.type or "int"
+                            
+                            # Parse input value based on type
+                            try:
+                                if data_type in ("double", "float"):
+                                    display_value = float(new_value_text)
+                                else:
+                                    display_value = int(new_value_text)
+                            except ValueError:
+                                QMessageBox.warning(
+                                    self,
+                                    "Error",
+                                    f"Invalid {data_type} value: {new_value_text}",
+                                )
+                                continue
 
                             # Convert display value to stored value using input_formula if specified
-                            stored_value_int = display_value_int
+                            stored_value_int = display_value
                             if first_editable_change.input_formula:
                                 try:
                                     stored_value_int = self._evaluate_formula(
@@ -935,21 +956,9 @@ class MainWindow(QMainWindow):
                                         success = False
                                         break
 
-                                    if (
-                                        not editable_changes
-                                        or change.size != editable_changes[0].size
-                                    ):
-                                        QMessageBox.warning(
-                                            self,
-                                            "Error",
-                                            f"Patch {patch_name} has inconsistent sizes",
-                                        )
-                                        success = False
-                                        break
-
                                     # Calculate final value using formula if specified, otherwise use stored value as-is
                                     try:
-                                        final_value_int = self._evaluate_formula(
+                                        final_value_calc = self._evaluate_formula(
                                             change.formula, stored_value_int
                                         )
                                     except ValueError as e:
@@ -961,29 +970,87 @@ class MainWindow(QMainWindow):
                                         success = False
                                         break
 
-                                    # Check for overflow based on size
-                                    max_value = (1 << (change.size * 8)) - 1
-                                    if final_value_int > max_value:
-                                        QMessageBox.warning(
-                                            self,
-                                            "Error",
-                                            f"Value {final_value_int} exceeds maximum for {change.size} byte(s) at offset {resolved_offset:#x}",
-                                        )
-                                        success = False
-                                        break
-                                    if final_value_int < 0:
-                                        QMessageBox.warning(
-                                            self,
-                                            "Error",
-                                            f"Value {final_value_int} is negative at offset {resolved_offset:#x}",
-                                        )
-                                        success = False
-                                        break
+                                    # Handle different data types
+                                    data_type = change.type or "int"
+                                    if data_type == "double":
+                                        # For double, ensure size is 8 and convert to float
+                                        if change.size != 8:
+                                            QMessageBox.warning(
+                                                self,
+                                                "Error",
+                                                f"Double type requires size 8, but got {change.size} at offset {resolved_offset:#x}",
+                                            )
+                                            success = False
+                                            break
+                                        try:
+                                            final_value_float = float(final_value_calc)
+                                            final_value = struct.pack("<d", final_value_float)
+                                        except (ValueError, OverflowError) as e:
+                                            QMessageBox.warning(
+                                                self,
+                                                "Error",
+                                                f"Invalid double value {final_value_calc} at offset {resolved_offset:#x}: {e}",
+                                            )
+                                            success = False
+                                            break
+                                    elif data_type == "float":
+                                        # For float, ensure size is 4 and convert to float
+                                        if change.size != 4:
+                                            QMessageBox.warning(
+                                                self,
+                                                "Error",
+                                                f"Float type requires size 4, but got {change.size} at offset {resolved_offset:#x}",
+                                            )
+                                            success = False
+                                            break
+                                        try:
+                                            final_value_float = float(final_value_calc)
+                                            final_value = struct.pack("<f", final_value_float)
+                                        except (ValueError, OverflowError) as e:
+                                            QMessageBox.warning(
+                                                self,
+                                                "Error",
+                                                f"Invalid float value {final_value_calc} at offset {resolved_offset:#x}: {e}",
+                                            )
+                                            success = False
+                                            break
+                                    else:
+                                        # Integer type
+                                        final_value_int = int(final_value_calc)
+                                        
+                                        # Check for overflow based on size
+                                        max_value = (1 << (change.size * 8)) - 1
+                                        if final_value_int > max_value:
+                                            QMessageBox.warning(
+                                                self,
+                                                "Error",
+                                                f"Value {final_value_int} exceeds maximum for {change.size} byte(s) at offset {resolved_offset:#x}",
+                                            )
+                                            success = False
+                                            break
+                                        if final_value_int < 0:
+                                            QMessageBox.warning(
+                                                self,
+                                                "Error",
+                                                f"Value {final_value_int} is negative at offset {resolved_offset:#x}",
+                                            )
+                                            success = False
+                                            break
+
+                                        try:
+                                            final_value = final_value_int.to_bytes(
+                                                change.size, byteorder="little"
+                                            )
+                                        except Exception as e:
+                                            QMessageBox.warning(
+                                                self,
+                                                "Error",
+                                                f"Failed to convert value to bytes at offset {resolved_offset:#x}: {e}",
+                                            )
+                                            success = False
+                                            break
 
                                     try:
-                                        final_value = final_value_int.to_bytes(
-                                            change.size, byteorder="little"
-                                        )
                                         addr = self._offset_to_rva(
                                             resolved_offset, binary
                                         )
@@ -1388,16 +1455,33 @@ class MainWindow(QMainWindow):
                                             "Failed to resolve offset for first editable change"
                                         )
                                     addr = self._offset_to_rva(first_offset, binary)
-                                    current = int.from_bytes(
-                                        binary.get_data(
-                                            addr, first_editable_change.size
-                                        ),
-                                        byteorder="little",
+                                    data_bytes = binary.get_data(
+                                        addr, first_editable_change.size
                                     )
+                                    data_type = first_editable_change.type or "int"
+                                    if data_type == "double":
+                                        if first_editable_change.size != 8:
+                                            raise ValueError(
+                                                f"Double type requires size 8, but got {first_editable_change.size}"
+                                            )
+                                        current = struct.unpack("<d", data_bytes)[0]
+                                    elif data_type == "float":
+                                        if first_editable_change.size != 4:
+                                            raise ValueError(
+                                                f"Float type requires size 4, but got {first_editable_change.size}"
+                                            )
+                                        current = struct.unpack("<f", data_bytes)[0]
+                                    else:
+                                        current = int.from_bytes(
+                                            data_bytes, byteorder="little"
+                                        )
 
                                     # Verify all editable changes have the same value
+                                    # Note: If sizes differ, we can't directly compare raw values,
+                                    # so we'll mark as different and use the first change's value for display
                                     all_same = True
                                     for change in editable_changes[1:]:
+                                        # If sizes differ, we can't directly compare values
                                         if change.size != first_editable_change.size:
                                             all_same = False
                                             break
@@ -1416,15 +1500,35 @@ class MainWindow(QMainWindow):
                                         change_addr = self._offset_to_rva(
                                             change_offset, change_binary
                                         )
-                                        change_value = int.from_bytes(
-                                            change_binary.get_data(
-                                                change_addr, change.size
-                                            ),
-                                            byteorder="little",
+                                        change_data_bytes = change_binary.get_data(
+                                            change_addr, change.size
                                         )
-                                        if change_value != current:
-                                            all_same = False
-                                            break
+                                        change_data_type = change.type or "int"
+                                        if change_data_type == "double":
+                                            if change.size != 8:
+                                                all_same = False
+                                                break
+                                            change_value = struct.unpack("<d", change_data_bytes)[0]
+                                        elif change_data_type == "float":
+                                            if change.size != 4:
+                                                all_same = False
+                                                break
+                                            change_value = struct.unpack("<f", change_data_bytes)[0]
+                                        else:
+                                            change_value = int.from_bytes(
+                                                change_data_bytes, byteorder="little"
+                                            )
+                                        # For floats/doubles, use approximate comparison due to floating point precision
+                                        first_type = first_editable_change.type or "int"
+                                        if (change_data_type in ("double", "float") or 
+                                            first_type in ("double", "float")):
+                                            if abs(change_value - current) > 1e-10:
+                                                all_same = False
+                                                break
+                                        else:
+                                            if change_value != current:
+                                                all_same = False
+                                                break
 
                                     # Apply display formula if specified (convert stored to display format)
                                     display_value = current
