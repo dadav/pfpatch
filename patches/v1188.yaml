@@ -47,6 +47,9 @@ patches:
     changes:
       - offset: 0x5C4B42 + 4
         size: 1
+      - offset: 0x5AC538 + 1
+        size: 1
+        file: sro_client
   - name: PK level requirement
     group: Character Limits
     description: |
@@ -83,6 +86,12 @@ patches:
     changes:
       - offset: 0x51017F + 1
         size: 1
+      - offset: 0x645688 + 1
+        size: 1
+        file: sro_client
+      - offset: 0x797E21 + 1
+        size: 1
+        file: sro_client
   - name: Max level for NPC death spot return
     group: Character Limits
     description: |
@@ -157,6 +166,65 @@ patches:
     changes:
       - offset: 0x83297F
         value: "EB"
+  - name: Nudity
+    group: Client Modifications
+    description: |
+      Enables nudity.
+    editable: false
+    file: sro_client
+    changes:
+      - offset: 0xA5CE5B
+        value: "90 90"
+  - name: Background sight range (lvl 0)
+    group: Client Modifications
+    description: |
+      Adjusts the sight range if set to lvl 0.
+    editable: true
+    file: sro_client
+    changes:
+      - offset: 0xDE4C5C
+        type: float
+        size: 4
+  - name: Background sight range (lvl 1)
+    group: Client Modifications
+    description: |
+      Adjusts the sight range if set to lvl 1.
+    editable: true
+    file: sro_client
+    changes:
+      - offset: 0xDE34C0
+        type: float
+        size: 4
+  - name: Background sight range (lvl 2)
+    group: Client Modifications
+    description: |
+      Adjusts the sight range if set to lvl 2.
+    editable: true
+    file: sro_client
+    changes:
+      - offset: 0xDE4C58
+        type: float
+        size: 4
+  - name: Background sight range (lvl 3)
+    group: Client Modifications
+    description: |
+      Adjusts the sight range if set to lvl 3.
+    editable: true
+    file: sro_client
+    changes:
+      - offset: 0xDE4C54
+        type: float
+        size: 4
+  - name: Background sight range (lvl 4)
+    group: Client Modifications
+    description: |
+      Adjusts the sight range if set to lvl 4.
+    editable: true
+    file: sro_client
+    changes:
+      - offset: 0xDE4C50
+        type: float
+        size: 4
   - name: Remove xtrap
     group: Client Modifications
     description: |
@@ -485,6 +553,12 @@ patches:
     changes:
       - offset: 0xADE8DC
         size: 4
+      - offset: 0xD8C438
+        size: 4
+        file: sro_client
+      - offset: 0xD92388
+        size: 4
+        file: sro_client
   - name: Guild member limit (lvl 2)
     group: Guild
     description: |
@@ -494,6 +568,12 @@ patches:
     changes:
       - offset: 0xADE8DC + 4
         size: 4
+      - offset: 0xD8C43C
+        size: 4
+        file: sro_client
+      - offset: 0xD9238C
+        size: 4
+        file: sro_client
   - name: Guild member limit (lvl 3)
     group: Guild
     description: |
@@ -503,6 +583,12 @@ patches:
     changes:
       - offset: 0xADE8DC + 8
         size: 4
+      - offset: 0xD8C440
+        size: 4
+        file: sro_client
+      - offset: 0xD92390
+        size: 4
+        file: sro_client
   - name: Guild member limit (lvl 4)
     group: Guild
     description: |
@@ -512,6 +598,12 @@ patches:
     changes:
       - offset: 0xADE8DC + 12
         size: 4
+      - offset: 0xD8C444
+        size: 4
+        file: sro_client
+      - offset: 0xD92394
+        size: 4
+        file: sro_client
   - name: Guild member limit (lvl 5)
     group: Guild
     description: |
@@ -521,6 +613,12 @@ patches:
     changes:
       - offset: 0xADE8DC + 16
         size: 4
+      - offset: 0xD8C448
+        size: 4
+        file: sro_client
+      - offset: 0xD92398
+        size: 4
+        file: sro_client
   - name: Guild storage slots (lvl 1)
     group: Guild
     description: |
