@@ -212,6 +212,7 @@ class Patch(BaseModel):
     file: Optional[str] = None
     description: Optional[str] = None
     editable: bool = False
+    group: Optional[str] = None
     changes: List[PatchChange]
     widget: Optional[Any] = None
 
@@ -1459,7 +1460,8 @@ class MainWindow(QMainWindow):
         """Update the patches UI with the given list of patches.
 
         Clears existing patches and creates new UI elements for each patch:
-        - Creates group boxes for each patch in a 2-column grid
+        - Groups patches by their 'group' field (or 'Ungrouped' if not specified)
+        - Creates group boxes for each patch group in a 2-column grid
         - For editable patches: Creates text input widgets with current values
         - For checkbox patches: Creates checkboxes with current patch state
         - Shows location information and required binaries status
@@ -1469,343 +1471,361 @@ class MainWindow(QMainWindow):
             patches: List of Patch objects to display in the UI
 
         Note:
-            Patches are arranged in a grid with 2 columns. Shows warnings
+            Patch groups are arranged in a grid with 2 columns. Shows warnings
             for patches that fail to process but continues with others.
         """
         self.clear_layout(self.patches_layout)
         self.patches.clear()
 
-        for idx, patch in enumerate(patches):
-            try:
-                required_binaries = self._get_patch_required_binaries(patch)
+        # Group patches by their 'group' field
+        grouped_patches: Dict[str, List[Patch]] = {}
+        for patch in patches:
+            group_name = patch.group if patch.group else "Ungrouped"
+            grouped_patches.setdefault(group_name, []).append(patch)
 
-                patch_group = QGroupBox(patch.name)
-                # Prevent vertical expansion - only take space needed
-                patch_group.setSizePolicy(
-                    QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum
-                )
+        # Create UI for each group
+        for group_idx, (group_name, group_patches) in enumerate(sorted(grouped_patches.items())):
+            
+            # Create a group box for this patch group
+            group_box = QGroupBox(group_name)
+            group_box.setSizePolicy(
+                QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum
+            )
+            group_layout = QVBoxLayout()
+            group_layout.setContentsMargins(5, 5, 5, 5)
 
-                # Set description as tooltip if available
-                if patch.description:
-                    patch_group.setToolTip(patch.description)
+            # Process each patch in this group
+            for patch in group_patches:
+                try:
+                    required_binaries = self._get_patch_required_binaries(patch)
 
-                patch_layout = QVBoxLayout()
+                    patch_group = QGroupBox(patch.name)
+                    # Prevent vertical expansion - only take space needed
+                    patch_group.setSizePolicy(
+                        QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum
+                    )
 
-                # Check if the required binaries are loaded
-                binaries_loaded = all(
-                    name in self.binary_files for name in required_binaries
-                )
+                    # Set description as tooltip if available
+                    if patch.description:
+                        patch_group.setToolTip(patch.description)
 
-                if patch.editable:
-                    # Find editable changes (with size) and fixed changes (with value)
-                    editable_changes = [c for c in patch.changes if c.size is not None]
-                    fixed_changes = [c for c in patch.changes if c.value is not None]
+                    patch_layout = QVBoxLayout()
 
-                    # Only show input widget if there are editable changes
-                    if editable_changes:
-                        value_widget = QLineEdit()
-                        value_widget.setEnabled(binaries_loaded)
+                    # Check if the required binaries are loaded
+                    binaries_loaded = all(
+                        name in self.binary_files for name in required_binaries
+                    )
 
-                        if binaries_loaded and len(editable_changes) > 0:
-                            first_editable_change = editable_changes[0]
-                            first_binary_name = self._get_change_binary(
-                                first_editable_change, patch.file
-                            )
-                            _, binary = self.binary_files[first_binary_name]
-                            # Check if all editable changes have the same value
-                            if first_editable_change.size is not None:
-                                try:
-                                    first_offset = self._resolve_change_offset(
-                                        first_editable_change, binary
-                                    )
-                                    if first_offset is None:
-                                        raise ValueError(
-                                            "Failed to resolve offset for first editable change"
+                    if patch.editable:
+                        # Find editable changes (with size) and fixed changes (with value)
+                        editable_changes = [c for c in patch.changes if c.size is not None]
+                        fixed_changes = [c for c in patch.changes if c.value is not None]
+
+                        # Only show input widget if there are editable changes
+                        if editable_changes:
+                            value_widget = QLineEdit()
+                            value_widget.setEnabled(binaries_loaded)
+
+                            if binaries_loaded and len(editable_changes) > 0:
+                                first_editable_change = editable_changes[0]
+                                first_binary_name = self._get_change_binary(
+                                    first_editable_change, patch.file
+                                )
+                                _, binary = self.binary_files[first_binary_name]
+                                # Check if all editable changes have the same value
+                                if first_editable_change.size is not None:
+                                    try:
+                                        first_offset = self._resolve_change_offset(
+                                            first_editable_change, binary
                                         )
-                                    addr = self._offset_to_rva(first_offset, binary)
-                                    data_bytes = binary.get_data(
-                                        addr, first_editable_change.size
-                                    )
-                                    data_type = first_editable_change.type or "int"
-                                    if data_type == "double":
-                                        if first_editable_change.size != 8:
+                                        if first_offset is None:
                                             raise ValueError(
-                                                f"Double type requires size 8, but got {first_editable_change.size}"
+                                                "Failed to resolve offset for first editable change"
                                             )
-                                        current = struct.unpack("<d", data_bytes)[0]
-                                    elif data_type == "float":
-                                        if first_editable_change.size != 4:
-                                            raise ValueError(
-                                                f"Float type requires size 4, but got {first_editable_change.size}"
-                                            )
-                                        current = struct.unpack("<f", data_bytes)[0]
-                                    else:
-                                        current = int.from_bytes(
-                                            data_bytes, byteorder="little"
+                                        addr = self._offset_to_rva(first_offset, binary)
+                                        data_bytes = binary.get_data(
+                                            addr, first_editable_change.size
                                         )
+                                        data_type = first_editable_change.type or "int"
+                                        if data_type == "double":
+                                            if first_editable_change.size != 8:
+                                                raise ValueError(
+                                                    f"Double type requires size 8, but got {first_editable_change.size}"
+                                                )
+                                            current = struct.unpack("<d", data_bytes)[0]
+                                        elif data_type == "float":
+                                            if first_editable_change.size != 4:
+                                                raise ValueError(
+                                                    f"Float type requires size 4, but got {first_editable_change.size}"
+                                                )
+                                            current = struct.unpack("<f", data_bytes)[0]
+                                        else:
+                                            current = int.from_bytes(
+                                                data_bytes, byteorder="little"
+                                            )
 
-                                    # Verify all editable changes have the same value
-                                    # Note: If sizes differ, we can't directly compare raw values,
-                                    # so we'll mark as different and use the first change's value for display
-                                    all_same = True
-                                    for change in editable_changes[1:]:
-                                        # If sizes differ, we can't directly compare values
-                                        if change.size != first_editable_change.size:
-                                            all_same = False
-                                            break
-                                        change_binary_name = self._get_change_binary(
-                                            change, patch.file
+                                        # Verify all editable changes have the same value
+                                        # Note: If sizes differ, we can't directly compare raw values,
+                                        # so we'll mark as different and use the first change's value for display
+                                        all_same = True
+                                        for change in editable_changes[1:]:
+                                            # If sizes differ, we can't directly compare values
+                                            if change.size != first_editable_change.size:
+                                                all_same = False
+                                                break
+                                            change_binary_name = self._get_change_binary(
+                                                change, patch.file
+                                            )
+                                            _, change_binary = self.binary_files[
+                                                change_binary_name
+                                            ]
+                                            change_offset = self._resolve_change_offset(
+                                                change, change_binary
+                                            )
+                                            if change_offset is None:
+                                                all_same = False
+                                                break
+                                            change_addr = self._offset_to_rva(
+                                                change_offset, change_binary
+                                            )
+                                            change_data_bytes = change_binary.get_data(
+                                                change_addr, change.size
+                                            )
+                                            change_data_type = change.type or "int"
+                                            if change_data_type == "double":
+                                                if change.size != 8:
+                                                    all_same = False
+                                                    break
+                                                change_value = struct.unpack(
+                                                    "<d", change_data_bytes
+                                                )[0]
+                                            elif change_data_type == "float":
+                                                if change.size != 4:
+                                                    all_same = False
+                                                    break
+                                                change_value = struct.unpack(
+                                                    "<f", change_data_bytes
+                                                )[0]
+                                            else:
+                                                change_value = int.from_bytes(
+                                                    change_data_bytes, byteorder="little"
+                                                )
+                                            # For floats/doubles, use approximate comparison due to floating point precision
+                                            first_type = first_editable_change.type or "int"
+                                            if change_data_type in (
+                                                "double",
+                                                "float",
+                                            ) or first_type in ("double", "float"):
+                                                if abs(change_value - current) > 1e-10:
+                                                    all_same = False
+                                                    break
+                                            else:
+                                                if change_value != current:
+                                                    all_same = False
+                                                    break
+
+                                        # Apply display formula if specified (convert stored to display format)
+                                        display_value = current
+                                        if first_editable_change.display_formula:
+                                            try:
+                                                display_value = self._evaluate_formula(
+                                                    first_editable_change.display_formula,
+                                                    current,
+                                                )
+                                            except Exception:
+                                                # If display formula fails, use raw value
+                                                pass
+
+                                        if all_same:
+                                            value_widget.setText(str(display_value))
+                                        else:
+                                            # Values differ, show first one with a note
+                                            value_widget.setText(str(display_value))
+                                            value_widget.setToolTip(
+                                                f"Note: Current values differ across {len(editable_changes)} editable locations. "
+                                                f"Entering a value will apply it to all editable locations."
+                                            )
+                                    except Exception as e:
+                                        QMessageBox.warning(
+                                            self,
+                                            "Warning",
+                                            f"Failed to read current value: {e}",
                                         )
+                            else:
+                                if len(editable_changes) > 1:
+                                    value_widget.setPlaceholderText(
+                                        f"Load required binaries first (will apply to {len(editable_changes)} editable locations)"
+                                    )
+                                else:
+                                    value_widget.setPlaceholderText(
+                                        "Load required binaries first"
+                                    )
+
+                            patch_layout.addWidget(value_widget)
+                            patch.widget = value_widget
+                        else:
+                            # No editable changes, but patch is marked as editable
+                            # This shouldn't happen per validation, but handle gracefully
+                            info_label = QLabel("No editable changes in this patch")
+                            info_label.setStyleSheet("color: gray; font-size: 9pt;")
+                            patch_layout.addWidget(info_label)
+                            patch.widget = None
+
+                        # Always show location information
+                        location_parts = []
+                        for i, c in enumerate(patch.changes):
+                            if c.offset is not None:
+                                part = f"{c.offset:#x}"
+                            elif c.pattern is not None:
+                                part = f"pattern: {c.pattern}"
+                                if binaries_loaded:
+                                    # Try to resolve and show actual offset
+                                    change_binary_name = self._get_change_binary(
+                                        c, patch.file
+                                    )
+                                    if change_binary_name in self.binary_files:
                                         _, change_binary = self.binary_files[
                                             change_binary_name
                                         ]
-                                        change_offset = self._resolve_change_offset(
-                                            change, change_binary
+                                        resolved = self._resolve_change_offset(
+                                            c, change_binary
                                         )
-                                        if change_offset is None:
-                                            all_same = False
-                                            break
-                                        change_addr = self._offset_to_rva(
-                                            change_offset, change_binary
-                                        )
-                                        change_data_bytes = change_binary.get_data(
-                                            change_addr, change.size
-                                        )
-                                        change_data_type = change.type or "int"
-                                        if change_data_type == "double":
-                                            if change.size != 8:
-                                                all_same = False
-                                                break
-                                            change_value = struct.unpack(
-                                                "<d", change_data_bytes
-                                            )[0]
-                                        elif change_data_type == "float":
-                                            if change.size != 4:
-                                                all_same = False
-                                                break
-                                            change_value = struct.unpack(
-                                                "<f", change_data_bytes
-                                            )[0]
-                                        else:
-                                            change_value = int.from_bytes(
-                                                change_data_bytes, byteorder="little"
-                                            )
-                                        # For floats/doubles, use approximate comparison due to floating point precision
-                                        first_type = first_editable_change.type or "int"
-                                        if change_data_type in (
-                                            "double",
-                                            "float",
-                                        ) or first_type in ("double", "float"):
-                                            if abs(change_value - current) > 1e-10:
-                                                all_same = False
-                                                break
-                                        else:
-                                            if change_value != current:
-                                                all_same = False
-                                                break
-
-                                    # Apply display formula if specified (convert stored to display format)
-                                    display_value = current
-                                    if first_editable_change.display_formula:
-                                        try:
-                                            display_value = self._evaluate_formula(
-                                                first_editable_change.display_formula,
-                                                current,
-                                            )
-                                        except Exception:
-                                            # If display formula fails, use raw value
-                                            pass
-
-                                    if all_same:
-                                        value_widget.setText(str(display_value))
-                                    else:
-                                        # Values differ, show first one with a note
-                                        value_widget.setText(str(display_value))
-                                        value_widget.setToolTip(
-                                            f"Note: Current values differ across {len(editable_changes)} editable locations. "
-                                            f"Entering a value will apply it to all editable locations."
-                                        )
-                                except Exception as e:
-                                    QMessageBox.warning(
-                                        self,
-                                        "Warning",
-                                        f"Failed to read current value: {e}",
-                                    )
-                        else:
-                            if len(editable_changes) > 1:
-                                value_widget.setPlaceholderText(
-                                    f"Load required binaries first (will apply to {len(editable_changes)} editable locations)"
-                                )
+                                        if resolved is not None:
+                                            part += f" → {resolved:#x}"
                             else:
-                                value_widget.setPlaceholderText(
-                                    "Load required binaries first"
-                                )
+                                part = "unknown"
 
-                        patch_layout.addWidget(value_widget)
+                            # Indicate if change is editable or fixed
+                            if c.size is not None:
+                                part += " [editable]"
+                            elif c.value is not None:
+                                part += " [fixed]"
+
+                            if c.formula:
+                                part += f" ({c.formula})"
+                            location_parts.append(part)
+
+                        if len(patch.changes) > 1:
+                            locations_text = (
+                                f"Applies to {len(patch.changes)} location(s): "
+                                + ", ".join(location_parts)
+                            )
+                        else:
+                            locations_text = f"Location: {location_parts[0]}"
+
+                        locations_label = QLabel(locations_text)
+                        locations_label.setStyleSheet("color: gray; font-size: 9pt;")
+                        locations_label.setWordWrap(True)
+                        patch_layout.addWidget(locations_label)
+
                         patch.widget = value_widget
                     else:
-                        # No editable changes, but patch is marked as editable
-                        # This shouldn't happen per validation, but handle gracefully
-                        info_label = QLabel("No editable changes in this patch")
-                        info_label.setStyleSheet("color: gray; font-size: 9pt;")
-                        patch_layout.addWidget(info_label)
-                        patch.widget = None
+                        value_widget = QCheckBox("Enable")
+                        value_widget.setEnabled(binaries_loaded)
 
-                    # Always show location information
-                    location_parts = []
-                    for i, c in enumerate(patch.changes):
-                        if c.offset is not None:
-                            part = f"{c.offset:#x}"
-                        elif c.pattern is not None:
-                            part = f"pattern: {c.pattern}"
-                            if binaries_loaded:
-                                # Try to resolve and show actual offset
-                                change_binary_name = self._get_change_binary(
-                                    c, patch.file
-                                )
-                                if change_binary_name in self.binary_files:
-                                    _, change_binary = self.binary_files[
-                                        change_binary_name
-                                    ]
-                                    resolved = self._resolve_change_offset(
-                                        c, change_binary
+                        if binaries_loaded:
+                            # Check current state
+                            all_match = True
+                            try:
+                                for change in patch.changes:
+                                    if change.value is None:
+                                        all_match = False
+                                        break
+                                    change_binary_name = self._get_change_binary(
+                                        change, patch.file
                                     )
-                                    if resolved is not None:
-                                        part += f" → {resolved:#x}"
-                        else:
-                            part = "unknown"
-
-                        # Indicate if change is editable or fixed
-                        if c.size is not None:
-                            part += " [editable]"
-                        elif c.value is not None:
-                            part += " [fixed]"
-
-                        if c.formula:
-                            part += f" ({c.formula})"
-                        location_parts.append(part)
-
-                    if len(patch.changes) > 1:
-                        locations_text = (
-                            f"Applies to {len(patch.changes)} location(s): "
-                            + ", ".join(location_parts)
-                        )
-                    else:
-                        locations_text = f"Location: {location_parts[0]}"
-
-                    locations_label = QLabel(locations_text)
-                    locations_label.setStyleSheet("color: gray; font-size: 9pt;")
-                    locations_label.setWordWrap(True)
-                    patch_layout.addWidget(locations_label)
-
-                    patch.widget = value_widget
-                else:
-                    value_widget = QCheckBox("Enable")
-                    value_widget.setEnabled(binaries_loaded)
-
-                    if binaries_loaded:
-                        # Check current state
-                        all_match = True
-                        try:
-                            for change in patch.changes:
-                                if change.value is None:
-                                    all_match = False
-                                    break
-                                change_binary_name = self._get_change_binary(
-                                    change, patch.file
-                                )
-                                _, change_binary = self.binary_files[change_binary_name]
-                                resolved_offset = self._resolve_change_offset(
-                                    change, change_binary
-                                )
-                                if resolved_offset is None:
-                                    all_match = False
-                                    break
-                                addr = self._offset_to_rva(
-                                    resolved_offset, change_binary
-                                )
-                                desired = bytes.fromhex(change.value)
-                                current = change_binary.get_data(addr, len(desired))
-                                if current != desired:
-                                    all_match = False
-                                    break
-
-                            if all_match:
-                                value_widget.setChecked(True)
-                        except Exception:
-                            # If we can't read the bytes, assume not patched
-                            pass
-
-                    patch_layout.addWidget(value_widget)
-
-                    # Always show location information
-                    location_parts = []
-                    for i, c in enumerate(patch.changes):
-                        if c.offset is not None:
-                            part = f"{c.offset:#x}"
-                        elif c.pattern is not None:
-                            part = f"pattern: {c.pattern}"
-                            if binaries_loaded:
-                                # Try to resolve and show actual offset
-                                change_binary_name = self._get_change_binary(
-                                    c, patch.file
-                                )
-                                if change_binary_name in self.binary_files:
-                                    _, change_binary = self.binary_files[
-                                        change_binary_name
-                                    ]
-                                    resolved = self._resolve_change_offset(
-                                        c, change_binary
+                                    _, change_binary = self.binary_files[change_binary_name]
+                                    resolved_offset = self._resolve_change_offset(
+                                        change, change_binary
                                     )
-                                    if resolved is not None:
-                                        part += f" → {resolved:#x}"
+                                    if resolved_offset is None:
+                                        all_match = False
+                                        break
+                                    addr = self._offset_to_rva(
+                                        resolved_offset, change_binary
+                                    )
+                                    desired = bytes.fromhex(change.value)
+                                    current = change_binary.get_data(addr, len(desired))
+                                    if current != desired:
+                                        all_match = False
+                                        break
+
+                                if all_match:
+                                    value_widget.setChecked(True)
+                            except Exception:
+                                # If we can't read the bytes, assume not patched
+                                pass
+
+                        patch_layout.addWidget(value_widget)
+
+                        # Always show location information
+                        location_parts = []
+                        for i, c in enumerate(patch.changes):
+                            if c.offset is not None:
+                                part = f"{c.offset:#x}"
+                            elif c.pattern is not None:
+                                part = f"pattern: {c.pattern}"
+                                if binaries_loaded:
+                                    # Try to resolve and show actual offset
+                                    change_binary_name = self._get_change_binary(
+                                        c, patch.file
+                                    )
+                                    if change_binary_name in self.binary_files:
+                                        _, change_binary = self.binary_files[
+                                            change_binary_name
+                                        ]
+                                        resolved = self._resolve_change_offset(
+                                            c, change_binary
+                                        )
+                                        if resolved is not None:
+                                            part += f" → {resolved:#x}"
+                            else:
+                                part = "unknown"
+
+                            if c.formula:
+                                part += f" ({c.formula})"
+                            location_parts.append(part)
+
+                        if len(patch.changes) > 1:
+                            locations_text = (
+                                f"Applies to {len(patch.changes)} location(s): "
+                                + ", ".join(location_parts)
+                            )
                         else:
-                            part = "unknown"
+                            locations_text = f"Location: {location_parts[0]}"
 
-                        if c.formula:
-                            part += f" ({c.formula})"
-                        location_parts.append(part)
+                        locations_label = QLabel(locations_text)
+                        locations_label.setStyleSheet("color: gray; font-size: 9pt;")
+                        locations_label.setWordWrap(True)
+                        patch_layout.addWidget(locations_label)
 
-                    if len(patch.changes) > 1:
-                        locations_text = (
-                            f"Applies to {len(patch.changes)} location(s): "
-                            + ", ".join(location_parts)
+                        patch.widget = value_widget
+
+                    if not binaries_loaded:
+                        missing = [
+                            name
+                            for name in required_binaries
+                            if name not in self.binary_files
+                        ]
+                        status_label = QLabel(
+                            f"Requires binaries: {', '.join(required_binaries)}\nMissing: {', '.join(missing)}"
                         )
-                    else:
-                        locations_text = f"Location: {location_parts[0]}"
+                        status_label.setStyleSheet("color: orange;")
+                        patch_layout.addWidget(status_label)
 
-                    locations_label = QLabel(locations_text)
-                    locations_label.setStyleSheet("color: gray; font-size: 9pt;")
-                    locations_label.setWordWrap(True)
-                    patch_layout.addWidget(locations_label)
-
-                    patch.widget = value_widget
-
-                if not binaries_loaded:
-                    missing = [
-                        name
-                        for name in required_binaries
-                        if name not in self.binary_files
-                    ]
-                    status_label = QLabel(
-                        f"Requires binaries: {', '.join(required_binaries)}\nMissing: {', '.join(missing)}"
+                    patch_group.setLayout(patch_layout)
+                    # Add patch to the group layout
+                    group_layout.addWidget(patch_group)
+                    self.patches[patch.name] = patch
+                except Exception as e:
+                    QMessageBox.warning(
+                        self, "Error", f"Error processing patch {patch.name}: {e}"
                     )
-                    status_label.setStyleSheet("color: orange;")
-                    patch_layout.addWidget(status_label)
+                    continue
 
-                patch_group.setLayout(patch_layout)
-                # Add to grid: row = idx // 2, column = idx % 2
-                row = idx // 2
-                col = idx % 2
-                self.patches_layout.addWidget(
-                    patch_group, row, col, 1, 1, Qt.AlignmentFlag.AlignTop
-                )
-                self.patches[patch.name] = patch
-            except Exception as e:
-                QMessageBox.warning(
-                    self, "Error", f"Error processing patch {patch.name}: {e}"
-                )
-                continue
+            # Set layout for the group box and add to vertical layout
+            group_box.setLayout(group_layout)
+            self.patches_layout.addWidget(group_box)
 
         self.update_patch_button_state()
 
@@ -1937,9 +1957,8 @@ class MainWindow(QMainWindow):
             }
         """)
         self.patches_widget = QWidget()
-        self.patches_layout = QGridLayout(self.patches_widget)
-        self.patches_layout.setColumnStretch(0, 1)
-        self.patches_layout.setColumnStretch(1, 1)
+        self.patches_layout = QVBoxLayout(self.patches_widget)
+        self.patches_layout.setSpacing(10)
         scroll.setWidget(self.patches_widget)
         patches_layout.addWidget(scroll)
         patches_group.setLayout(patches_layout)

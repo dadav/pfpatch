@@ -11,6 +11,7 @@ files:
 
 patches:
   - name: Max characters per account
+    group: Character Limits
     description: |
       Adjust the number of characters per account
       ("SRO_VT_SHARD.dbo._AddNewChar" MODIFICATION REQUIRED: remove if condition)
@@ -26,6 +27,7 @@ patches:
         size: 1
         file: shardmanager
   - name: Union participants limit
+    group: Guild
     description: |
       Adjust the max number of guilds in a union.
     editable: true
@@ -34,6 +36,7 @@ patches:
       - offset: 0x434311 + 1
         size: 1
   - name: PK level requirement
+    group: Character Limits
     description: |
       Adjust the level requirement of PK.
     editable: true
@@ -42,6 +45,7 @@ patches:
       - offset: 0x5295DA + 1
         size: 1
   - name: Magic item drop probability
+    group: Items
     description: |
       Adjust the probability of magic item drops.
     editable: true
@@ -50,6 +54,7 @@ patches:
       - offset: 0x727784 + 2
         size: 1
   - name: Min participants in CTF
+    group: Events
     description: |
       Min number of participants in CTF.
     editable: true
@@ -58,6 +63,7 @@ patches:
       - offset: 0x672891 + 4
         size: 1
   - name: Min participants in BA
+    group: Events
     description: |
       Min number of participants in battle arena.
     editable: true
@@ -66,6 +72,7 @@ patches:
       - offset: 0x66A1B0 + 4
         size: 1
   - name: Fix 1h dc bug
+    group: Bug Fixes
     description: |
       Fixes the disconnect issue after 1h.
     editable: false
@@ -74,6 +81,7 @@ patches:
       - offset: 0x45055C
         value: "EB 30 90 90 90"
   - name: Multiclient
+    group: Client Modifications
     description: |
       Enables multiclient
     editable: false
@@ -82,6 +90,7 @@ patches:
       - offset: 0x83297F
         value: "EB"
   - name: Remove xtrap
+    group: Client Modifications
     description: |
       Removes xtrap...
     editable: false
@@ -95,6 +104,7 @@ patches:
         value: "90"
         repeat: 0x14FF
   - name: Max job level
+    group: Job
     description: |
       Adjust the max job level.
     editable: true
@@ -103,6 +113,7 @@ patches:
       - offset: 0x60de69 + 3
         size: 1
   - name: Job leaving penalty
+    group: Job
     description: |
       The days of penalty for leaving a job.
     editable: true
@@ -113,6 +124,7 @@ patches:
         display_formula: "value / (24 * 60 * 60)"
         input_formula: "value * 24 * 60 * 60"
   - name: Guild leaving penalty
+    group: Guild
     description: |
       The days of penalty for leaving a guild.
     editable: true
@@ -131,6 +143,7 @@ patches:
         display_formula: "value / (24 * 60 * 60)"
         input_formula: "value * 24 * 60 * 60"
   - name: Level cap
+    group: Character Limits
     description: |
       The max level on this server.
     editable: true
@@ -159,6 +172,7 @@ patches:
         size: 2
         formula: "(value - 1) * 4"
   - name: Quest level cap
+    group: Character Limits
     description: |
       The max quest level on this server.
     editable: true
@@ -167,6 +181,7 @@ patches:
       - offset: 0x955134 + 3
         size: 1
   - name: Party matching filter level
+    group: Party
     description: |
       The max level filter for party matching.
     editable: true
@@ -190,6 +205,7 @@ patches:
         size: 1
 
   - name: Max beginner marker level
+    group: Character Limits
     description: |
       Adjust the level when the beginner marker will vanish.
     editable: true
@@ -198,6 +214,7 @@ patches:
       - offset: 0x518B99 + 3
         size: 1
   - name: Min level to create parties
+    group: Party
     description: |
       Adjust the level the users should be allowed to create parties.
     editable: true
@@ -206,6 +223,7 @@ patches:
       - offset: 0x513fec + 1
         size: 1
   - name: Max mastery level (CH)
+    group: Character Limits
     description: |
       The max mastery level of CH characters.
     editable: true
@@ -220,6 +238,7 @@ patches:
         size: 4
         file: sro_client
   - name: Max mastery level (EU)
+    group: Character Limits
     description: |
       The max mastery level of EU characters.
     editable: true
@@ -238,6 +257,7 @@ patches:
         type: double
         file: gameserver
   - name: Cooldown from Universal Pills (ms)
+    group: Client Modifications
     description: |
       How often a pill can be taken.
     editable: true
@@ -246,6 +266,7 @@ patches:
       - offset: 0x87ABD3 + 1
         size: 4
   - name: Cooldown from Purification Pills (ms)
+    group: Client Modifications
     description: |
       How often a pill can be taken.
     editable: true
@@ -254,6 +275,7 @@ patches:
       - offset: 0x87AC02 + 1
         size: 4
   - name: Zoom hack
+    group: Client Modifications
     description: |
       Activates unlimited zoom.
     editable: false
@@ -262,6 +284,7 @@ patches:
       - offset: 0x77B4F3 + 2
         value: "00"
   - name: Auto select range
+    group: Client Modifications
     description: |
       Sets the auto select range.
     editable: true
@@ -271,6 +294,7 @@ patches:
         size: 4
         type: float
   - name: Party mobs spawn probability
+    group: Party
     description: |
       How often a mob should spawn as party type (in %).
     editable: true
@@ -279,6 +303,7 @@ patches:
       - offset: 0x5608e2 + 2
         size: 1
   - name: Party mobs member requirement
+    group: Party
     description: |
       How many players need to be in a party for party monster to spawn.
     editable: true
@@ -287,6 +312,7 @@ patches:
       - offset: 0x558F20 + 4
         size: 1
   - name: Agent server capacity
+    group: Limits
     description: |
       How many players can join the agent server.
     editable: true
@@ -297,22 +323,20 @@ patches:
       - offset: 0x4744C7 + 1
         size: 4
   - name: Remove exchange exploit
+    group: Bug Fixes
     description: |
       Removes a cancel attack exploit.
     editable: false
     file: gameserver
     changes:
+      # ui based
       - offset: 0x515578
         value: "90 90"
-  - name: Remove invisible exploit
-    description: |
-      Removes a invisible exploit.
-    editable: false
-    file: gameserver
-    changes:
+      # paket based
       - offset: 0x515B78
         value: "90 90"
   - name: Remove rates limit (exp, items, gold..)
+    group: Limits
     description: |
       There is a limit which prevents values larger than 2500.
     editable: false
@@ -327,6 +351,7 @@ patches:
       - offset: 0x427349 + 2
         value: "42"
   - name: Gameserver spawn limit
+    group: Limits
     description: |
       How many mobs can spawn.
     editable: true
@@ -344,6 +369,7 @@ patches:
         size: 4
         formula: "value * 0x1D0"
   - name: Disable Quest:RaiseEvent errors
+    group: Performance
     description: |
       Removes the Quest:RaiseEvent errors to reduce load.
     editable: false
@@ -352,6 +378,7 @@ patches:
       - offset: 0x5805C8
         value: "90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90"
   - name: Disable green book
+    group: Annoyances
     description: |
       Removes the green book from the gameserver.
     editable: false
@@ -362,6 +389,7 @@ patches:
       - offset: 0x41474D
         value: "90 90 90 90 90"
   - name: Disable login captcha
+    group: Annoyances
     description: |
       Removes the login captcha.
     editable: false
