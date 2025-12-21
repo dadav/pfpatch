@@ -1,4 +1,6 @@
 ---
+# Offsets mainly copied from https://github.com/JellyBitz/vSRO-ServerAddon/
+# Big thx to JellyBitz
 files:
   gameserver:
     default: SR_Gameserver.exe
