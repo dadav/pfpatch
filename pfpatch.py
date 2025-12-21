@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple, Union
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 from PyQt6.QtWidgets import (
     QApplication,
@@ -192,7 +192,9 @@ class PatchChange(BaseModel):
                     raise ValueError(f"Repeat must be a positive integer, got {result}")
                 return result
             except ValueError:
-                raise ValueError(f"Invalid repeat value: {v}. Must be a positive integer or hex value like '0x14FF'")
+                raise ValueError(
+                    f"Invalid repeat value: {v}. Must be a positive integer or hex value like '0x14FF'"
+                )
         raise ValueError(f"Invalid repeat type: {type(v)}. Must be int or str")
 
     @model_validator(mode="after")
@@ -620,7 +622,9 @@ class MainWindow(QMainWindow):
                         self.saved_binary_paths = settings.binary_paths or {}
                         self.config_dir = settings.config_dir
                         self.saved_selected_config = settings.selected_config
-                        self.enable_binary_backups = settings.enable_binary_backups or False
+                        self.enable_binary_backups = (
+                            settings.enable_binary_backups or False
+                        )
                     else:
                         self.config_dir = None
                         self.saved_selected_config = None
@@ -765,13 +769,13 @@ class MainWindow(QMainWindow):
             return False
 
         backup_path = self.get_binary_backup_path(binary_name)
-        
+
         # Only backup if no backup exists
         if backup_path.exists():
             return True
 
         binary_path, _ = self.binary_files[binary_name]
-        
+
         try:
             shutil.copy2(binary_path, backup_path)
             return True
@@ -883,7 +887,10 @@ class MainWindow(QMainWindow):
                         original_bytes = binary.get_data(addr, value_size)
                         # Save offset as hex string
                         new_data.append(
-                            {"offset": f"{current_offset:#x}", "value": original_bytes.hex()}
+                            {
+                                "offset": f"{current_offset:#x}",
+                                "value": original_bytes.hex(),
+                            }
                         )
                         existing_offsets.add(current_offset)
                     except Exception as e:
@@ -911,7 +918,10 @@ class MainWindow(QMainWindow):
                     original_bytes = binary.get_data(addr, size)
                     # Save offset as hex string
                     new_data.append(
-                        {"offset": f"{resolved_offset:#x}", "value": original_bytes.hex()}
+                        {
+                            "offset": f"{resolved_offset:#x}",
+                            "value": original_bytes.hex(),
+                        }
                     )
                     existing_offsets.add(resolved_offset)
                 except Exception as e:
@@ -1046,7 +1056,7 @@ class MainWindow(QMainWindow):
                     continue
 
                 required_binaries = set(changes_by_binary.keys())
-                
+
                 # Check if all binaries are loaded
                 if any(b not in self.binary_files for b in required_binaries):
                     continue
@@ -1316,19 +1326,23 @@ class MainWindow(QMainWindow):
                                 elif change.value is not None:
                                     try:
                                         final_value = bytes.fromhex(change.value)
-                                        
+
                                         # Handle repeat: write the value multiple times at consecutive offsets
                                         if change.repeat is not None:
                                             repeat_count = change.repeat
                                             value_size = len(final_value)
-                                            
+
                                             # Write the value 'repeat' times at consecutive offsets
                                             for i in range(repeat_count):
-                                                current_offset = resolved_offset + (i * value_size)
+                                                current_offset = resolved_offset + (
+                                                    i * value_size
+                                                )
                                                 addr = self._offset_to_rva(
                                                     current_offset, binary
                                                 )
-                                                binary.set_bytes_at_rva(addr, final_value)
+                                                binary.set_bytes_at_rva(
+                                                    addr, final_value
+                                                )
                                         else:
                                             # Single write (no repeat)
                                             addr = self._offset_to_rva(
@@ -1411,7 +1425,8 @@ class MainWindow(QMainWindow):
                 )
             if backed_up_binaries:
                 backup_paths = [
-                    str(self.get_binary_backup_path(name)) for name in backed_up_binaries
+                    str(self.get_binary_backup_path(name))
+                    for name in backed_up_binaries
                 ]
                 backup_dir_abs = str(self.backup_dir.resolve())
                 success_parts.append(
@@ -1420,9 +1435,7 @@ class MainWindow(QMainWindow):
                 )
 
             if success_parts:
-                QMessageBox.information(
-                    self, "Success", "\n\n".join(success_parts)
-                )
+                QMessageBox.information(self, "Success", "\n\n".join(success_parts))
             else:
                 QMessageBox.information(self, "Info", "No changes to apply.")
         except Exception as e:
@@ -1694,8 +1707,9 @@ class MainWindow(QMainWindow):
             grouped_patches.setdefault(group_name, []).append(patch)
 
         # Create UI for each group
-        for group_idx, (group_name, group_patches) in enumerate(sorted(grouped_patches.items())):
-            
+        for group_idx, (group_name, group_patches) in enumerate(
+            sorted(grouped_patches.items())
+        ):
             # Create a group box for this patch group
             group_box = QGroupBox(group_name)
             group_box.setSizePolicy(
@@ -1728,8 +1742,12 @@ class MainWindow(QMainWindow):
 
                     if patch.editable:
                         # Find editable changes (with size) and fixed changes (with value)
-                        editable_changes = [c for c in patch.changes if c.size is not None]
-                        fixed_changes = [c for c in patch.changes if c.value is not None]
+                        editable_changes = [
+                            c for c in patch.changes if c.size is not None
+                        ]
+                        fixed_changes = [
+                            c for c in patch.changes if c.value is not None
+                        ]
 
                         # Only show input widget if there are editable changes
                         if editable_changes:
@@ -1780,11 +1798,16 @@ class MainWindow(QMainWindow):
                                         all_same = True
                                         for change in editable_changes[1:]:
                                             # If sizes differ, we can't directly compare values
-                                            if change.size != first_editable_change.size:
+                                            if (
+                                                change.size
+                                                != first_editable_change.size
+                                            ):
                                                 all_same = False
                                                 break
-                                            change_binary_name = self._get_change_binary(
-                                                change, patch.file
+                                            change_binary_name = (
+                                                self._get_change_binary(
+                                                    change, patch.file
+                                                )
                                             )
                                             _, change_binary = self.binary_files[
                                                 change_binary_name
@@ -1818,10 +1841,13 @@ class MainWindow(QMainWindow):
                                                 )[0]
                                             else:
                                                 change_value = int.from_bytes(
-                                                    change_data_bytes, byteorder="little"
+                                                    change_data_bytes,
+                                                    byteorder="little",
                                                 )
                                             # For floats/doubles, use approximate comparison due to floating point precision
-                                            first_type = first_editable_change.type or "int"
+                                            first_type = (
+                                                first_editable_change.type or "int"
+                                            )
                                             if change_data_type in (
                                                 "double",
                                                 "float",
@@ -1944,7 +1970,9 @@ class MainWindow(QMainWindow):
                                     change_binary_name = self._get_change_binary(
                                         change, patch.file
                                     )
-                                    _, change_binary = self.binary_files[change_binary_name]
+                                    _, change_binary = self.binary_files[
+                                        change_binary_name
+                                    ]
                                     resolved_offset = self._resolve_change_offset(
                                         change, change_binary
                                     )
