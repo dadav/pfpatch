@@ -678,7 +678,7 @@ patches:
     file: gameserver
     changes:
       - offset: 0x52ADAA + 6
-        size: 4
+        size: 1
   - name: Astral value
     group: Alchemy
     description: |

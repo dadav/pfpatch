@@ -302,6 +302,7 @@ class Settings(BaseModel):
     binary_paths: Dict[str, str] = Field(default_factory=dict)
     config_dir: Optional[str] = None
     selected_config: Optional[str] = None
+    enable_binary_backups: bool = False
 
 
 class MainWindow(QMainWindow):
@@ -319,6 +320,7 @@ class MainWindow(QMainWindow):
         self.patches: Dict[str, Patch] = {}
         self.config_dir: Optional[str] = None
         self.saved_selected_config: Optional[str] = None
+        self.enable_binary_backups: bool = False
 
         # Set backup directory - use executable directory for onefile, or current dir for script
         if getattr(sys, "frozen", False):
@@ -618,19 +620,23 @@ class MainWindow(QMainWindow):
                         self.saved_binary_paths = settings.binary_paths or {}
                         self.config_dir = settings.config_dir
                         self.saved_selected_config = settings.selected_config
+                        self.enable_binary_backups = settings.enable_binary_backups or False
                     else:
                         self.config_dir = None
                         self.saved_selected_config = None
+                        self.enable_binary_backups = False
             except (yaml.YAMLError, ValueError, KeyError) as e:
                 QMessageBox.warning(self, "Warning", f"Failed to load settings: {e}")
                 self.config_dir = None
                 self.saved_selected_config = None
+                self.enable_binary_backups = False
             except Exception as e:
                 QMessageBox.warning(
                     self, "Warning", f"Unexpected error loading settings: {e}"
                 )
                 self.config_dir = None
                 self.saved_selected_config = None
+                self.enable_binary_backups = False
         else:
             self.config_dir = None
             self.saved_selected_config = None
@@ -652,6 +658,7 @@ class MainWindow(QMainWindow):
                 binary_paths=binary_paths,
                 config_dir=self.config_dir,
                 selected_config=self.saved_selected_config,
+                enable_binary_backups=self.enable_binary_backups,
             )
 
             with open(self.settings_file, "w", encoding="utf-8") as f:
@@ -706,6 +713,64 @@ class MainWindow(QMainWindow):
             Path object pointing to the backup YAML file for this binary
         """
         return self.backup_dir / f"{binary_name}_backup.yaml"
+
+    def get_binary_backup_path(self, binary_name: str) -> Path:
+        """Generate full binary backup file path.
+
+        Args:
+            binary_name: Name of the binary to get backup path for
+
+        Returns:
+            Path object pointing to the full binary backup file
+        """
+        return self.backup_dir / f"{binary_name}_backup.bin"
+
+    def binary_backup_exists(self, binary_name: str) -> bool:
+        """Check if a full binary backup exists.
+
+        Args:
+            binary_name: Name of the binary to check
+
+        Returns:
+            True if binary backup file exists, False otherwise
+        """
+        backup_path = self.get_binary_backup_path(binary_name)
+        return backup_path.exists()
+
+    def backup_binary_file(self, binary_name: str) -> bool:
+        """Backup the whole binary file before patching.
+
+        Args:
+            binary_name: Name of the binary to backup
+
+        Returns:
+            True if backup was successful, False otherwise
+
+        Note:
+            Only creates backup if it doesn't already exist. Shows warnings
+            if backup fails but does not interrupt execution.
+        """
+        if binary_name not in self.binary_files:
+            return False
+
+        backup_path = self.get_binary_backup_path(binary_name)
+        
+        # Only backup if no backup exists
+        if backup_path.exists():
+            return True
+
+        binary_path, _ = self.binary_files[binary_name]
+        
+        try:
+            shutil.copy2(binary_path, backup_path)
+            return True
+        except (IOError, OSError, shutil.Error) as e:
+            QMessageBox.warning(
+                self,
+                "Warning",
+                f"Failed to create binary backup for {binary_name}: {e}",
+            )
+            return False
 
     def is_binary_patched(self, binary_name: str) -> bool:
         """Check if binary has been patched (backup exists).
@@ -888,6 +953,49 @@ class MainWindow(QMainWindow):
             patch widgets are enabled. Skips patches with validation errors.
         """
         try:
+            # Collect all binaries that will be modified
+            binaries_to_modify = set()
+            for patch_name, patch in self.patches.items():
+                try:
+                    changes_by_binary = self._group_changes_by_binary(patch)
+                except ValueError:
+                    continue
+
+                required_binaries = set(changes_by_binary.keys())
+                
+                # Check if all binaries are loaded
+                if any(b not in self.binary_files for b in required_binaries):
+                    continue
+
+                # Skip if patch widget is disabled (only for editable patches with editable changes)
+                if (
+                    patch.editable
+                    and patch.widget is not None
+                    and not patch.widget.isEnabled()
+                ):
+                    continue
+
+                # For editable patches, check if they will modify anything
+                if patch.editable:
+                    if patch.widget is None:
+                        continue
+                    new_value_text = patch.widget.text().strip()
+                    if not new_value_text:
+                        # Empty value might restore, but we'll include it to be safe
+                        binaries_to_modify.update(required_binaries)
+                    else:
+                        binaries_to_modify.update(required_binaries)
+                else:
+                    # For checkbox patches, include if checked
+                    if patch.widget.isChecked():
+                        binaries_to_modify.update(required_binaries)
+
+            # Backup whole binaries if enabled and no backup exists
+            if self.enable_binary_backups:
+                for binary_name in binaries_to_modify:
+                    if not self.binary_backup_exists(binary_name):
+                        self.backup_binary_file(binary_name)
+
             modified_binaries = set()
 
             for patch_name, patch in self.patches.items():
@@ -1963,6 +2071,15 @@ class MainWindow(QMainWindow):
         patches_layout.addWidget(scroll)
         patches_group.setLayout(patches_layout)
         # -----------------------------------------
+        # Binary backup checkbox
+        self.binary_backup_checkbox = QCheckBox("Create backup before patching")
+        self.binary_backup_checkbox.setToolTip(
+            "Backup the whole binary file before patching (only if no backup exists)"
+        )
+        self.binary_backup_checkbox.setChecked(self.enable_binary_backups)
+        self.binary_backup_checkbox.stateChanged.connect(self._on_binary_backup_changed)
+
+        # -----------------------------------------
         #
         self.patch_btn = QPushButton("Patch")
         self.patch_btn.clicked.connect(self.apply_patches)
@@ -1971,7 +2088,17 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(config_group)
         main_layout.addWidget(files_group)
         main_layout.addWidget(patches_group)
+        main_layout.addWidget(self.binary_backup_checkbox)
         main_layout.addWidget(self.patch_btn)
+
+    def _on_binary_backup_changed(self, state: int) -> None:
+        """Handle binary backup checkbox state change.
+
+        Args:
+            state: Checkbox state (Qt.CheckState)
+        """
+        self.enable_binary_backups = state == Qt.CheckState.Checked
+        self.save_settings()
 
 
 def main() -> None:
