@@ -753,6 +753,17 @@ class MainWindow(QMainWindow):
         if binary_name not in self.binary_files:
             return False
 
+        # Ensure backup directory exists
+        try:
+            self.backup_dir.mkdir(parents=True, exist_ok=True)
+        except (IOError, OSError) as e:
+            QMessageBox.warning(
+                self,
+                "Warning",
+                f"Failed to create backup directory: {e}",
+            )
+            return False
+
         backup_path = self.get_binary_backup_path(binary_name)
         
         # Only backup if no backup exists
@@ -784,6 +795,27 @@ class MainWindow(QMainWindow):
         backup_path = self.get_backup_path(binary_name)
         return backup_path.exists()
 
+    def _normalize_offset(self, offset: Union[int, str]) -> int:
+        """Normalize offset to integer for comparison.
+
+        Handles both integer and hex string formats (e.g., "0x12345").
+
+        Args:
+            offset: Offset as int or hex string
+
+        Returns:
+            Integer offset value
+        """
+        if isinstance(offset, int):
+            return offset
+        if isinstance(offset, str):
+            # Handle hex string format
+            if offset.startswith("0x") or offset.startswith("0X"):
+                return int(offset, 16)
+            # Try parsing as decimal
+            return int(offset)
+        return offset
+
     def save_original_bytes(self, binary_name: str, changes: List[PatchChange]) -> None:
         """Save original bytes before first patch.
 
@@ -798,6 +830,7 @@ class MainWindow(QMainWindow):
         Note:
             Skips offsets that are already in the backup file. Shows warnings
             if reading bytes fails but does not interrupt execution.
+            Offsets are saved as hex addresses (e.g., "0x12345").
         """
         backup_path = self.get_backup_path(binary_name)
         _, binary = self.binary_files[binary_name]
@@ -809,8 +842,11 @@ class MainWindow(QMainWindow):
             try:
                 with open(backup_path, "r", encoding="utf-8") as f:
                     existing_data = yaml.safe_load(f) or []
+                    # Normalize offsets to integers for comparison (handle both hex strings and ints)
                     existing_offsets = {
-                        item["offset"] for item in existing_data if "offset" in item
+                        self._normalize_offset(item["offset"])
+                        for item in existing_data
+                        if "offset" in item
                     }
             except (IOError, OSError, yaml.YAMLError, KeyError) as e:
                 QMessageBox.warning(
@@ -845,8 +881,9 @@ class MainWindow(QMainWindow):
                     addr = self._offset_to_rva(current_offset, binary)
                     try:
                         original_bytes = binary.get_data(addr, value_size)
+                        # Save offset as hex string
                         new_data.append(
-                            {"offset": current_offset, "value": original_bytes.hex()}
+                            {"offset": f"{current_offset:#x}", "value": original_bytes.hex()}
                         )
                         existing_offsets.add(current_offset)
                     except Exception as e:
@@ -872,8 +909,9 @@ class MainWindow(QMainWindow):
                     continue
                 try:
                     original_bytes = binary.get_data(addr, size)
+                    # Save offset as hex string
                     new_data.append(
-                        {"offset": resolved_offset, "value": original_bytes.hex()}
+                        {"offset": f"{resolved_offset:#x}", "value": original_bytes.hex()}
                     )
                     existing_offsets.add(resolved_offset)
                 except Exception as e:
@@ -893,6 +931,49 @@ class MainWindow(QMainWindow):
         except (IOError, OSError, yaml.YAMLError) as e:
             QMessageBox.warning(self, "Warning", f"Failed to save backup: {e}")
 
+    def is_patch_applied(self, patch: Patch) -> bool:
+        """Check if a patch is currently applied to the binary.
+
+        Verifies that all changes in the patch match the current binary state.
+        Returns True only if all patch locations have the expected patched values.
+
+        Args:
+            patch: The patch to check
+
+        Returns:
+            True if the patch is currently applied, False otherwise
+        """
+        try:
+            changes_by_binary = self._group_changes_by_binary(patch)
+        except ValueError:
+            return False
+
+        required_binaries = set(changes_by_binary.keys())
+
+        # Check if all binaries are loaded
+        if any(b not in self.binary_files for b in required_binaries):
+            return False
+
+        # Check if all changes match the patched state
+        for binary_name, changes in changes_by_binary.items():
+            _, binary = self.binary_files[binary_name]
+            for change in changes:
+                if change.value is None:
+                    continue
+                resolved_offset = self._resolve_change_offset(change, binary)
+                if resolved_offset is None:
+                    return False
+                addr = self._offset_to_rva(resolved_offset, binary)
+                desired = bytes.fromhex(change.value)
+                try:
+                    current = binary.get_data(addr, len(desired))
+                    if current != desired:
+                        return False
+                except Exception:
+                    return False
+
+        return True
+
     def restore_original_bytes(self, binary_name: str) -> bool:
         """Restore original bytes from backup.
 
@@ -907,6 +988,7 @@ class MainWindow(QMainWindow):
 
         Note:
             Shows warnings if backup file doesn't exist or restoration fails.
+            Handles offsets in both hex string format (e.g., "0x12345") and integer format.
         """
         backup_path = self.get_backup_path(binary_name)
 
@@ -929,7 +1011,9 @@ class MainWindow(QMainWindow):
 
             # Restore original bytes
             for change in original_data:
-                addr = self._offset_to_rva(change["offset"], binary)
+                # Normalize offset (handle both hex strings and integers)
+                offset = self._normalize_offset(change["offset"])
+                addr = self._offset_to_rva(offset, binary)
                 binary.set_bytes_at_rva(addr, bytes.fromhex(change["value"]))
 
             return True
@@ -991,10 +1075,12 @@ class MainWindow(QMainWindow):
                         binaries_to_modify.update(required_binaries)
 
             # Backup whole binaries if enabled and no backup exists
+            backed_up_binaries = []
             if self.enable_binary_backups:
                 for binary_name in binaries_to_modify:
                     if not self.binary_backup_exists(binary_name):
-                        self.backup_binary_file(binary_name)
+                        if self.backup_binary_file(binary_name):
+                            backed_up_binaries.append(binary_name)
 
             modified_binaries = set()
 
@@ -1300,9 +1386,11 @@ class MainWindow(QMainWindow):
                                 )
                             modified_binaries.add(binary_name)
                     else:
-                        for binary_name in required_binaries:
-                            if self.restore_original_bytes(binary_name):
-                                modified_binaries.add(binary_name)
+                        # Only restore if the patch was previously applied (currently active)
+                        if self.is_patch_applied(patch):
+                            for binary_name in required_binaries:
+                                if self.restore_original_bytes(binary_name):
+                                    modified_binaries.add(binary_name)
 
             # Write all modified binaries
             for binary_name in modified_binaries:
@@ -1315,11 +1403,25 @@ class MainWindow(QMainWindow):
                     )
                     return
 
+            # Build success message
+            success_parts = []
             if modified_binaries:
+                success_parts.append(
+                    f"Patches applied to {len(modified_binaries)} binary(ies) successfully!"
+                )
+            if backed_up_binaries:
+                backup_paths = [
+                    str(self.get_binary_backup_path(name)) for name in backed_up_binaries
+                ]
+                backup_dir_abs = str(self.backup_dir.resolve())
+                success_parts.append(
+                    f"Backups created: {', '.join(backed_up_binaries)}\n"
+                    f"Location: {backup_dir_abs}"
+                )
+
+            if success_parts:
                 QMessageBox.information(
-                    self,
-                    "Success",
-                    f"Patches applied to {len(modified_binaries)} binary(ies) successfully!",
+                    self, "Success", "\n\n".join(success_parts)
                 )
             else:
                 QMessageBox.information(self, "Info", "No changes to apply.")
@@ -2097,7 +2199,7 @@ class MainWindow(QMainWindow):
         Args:
             state: Checkbox state (Qt.CheckState)
         """
-        self.enable_binary_backups = state == Qt.CheckState.Checked
+        self.enable_binary_backups = Qt.CheckState(state) == Qt.CheckState.Checked
         self.save_settings()
 
 
