@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple, Union
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 from PyQt6.QtWidgets import (
     QApplication,
@@ -855,9 +855,7 @@ class MainWindow(QMainWindow):
 
         # Check which binaries have backups
         binaries_with_backups = [
-            name
-            for name in self.binary_files.keys()
-            if self.binary_backup_exists(name)
+            name for name in self.binary_files.keys() if self.binary_backup_exists(name)
         ]
 
         if not binaries_with_backups:
@@ -908,8 +906,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(
                 self,
                 "Partial Success",
-                f"Restored: {', '.join(restored)}\n\n"
-                f"Failed: {', '.join(failed)}",
+                f"Restored: {', '.join(restored)}\n\nFailed: {', '.join(failed)}",
             )
         elif failed:
             QMessageBox.warning(
@@ -1582,7 +1579,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(self, "Success", "\n\n".join(success_parts))
             else:
                 QMessageBox.information(self, "Info", "No changes to apply.")
-            
+
             # Update restore button state in case backups were created
             self.update_restore_button_state()
         except Exception as e:
@@ -1751,7 +1748,7 @@ class MainWindow(QMainWindow):
         # Close all binary files before clearing
         for binary_name in list(self.binary_files.keys()):
             self._close_binary(binary_name)
-        
+
         self.update_restore_button_state()
 
     def config_changed(self, index: int) -> None:
@@ -1919,11 +1916,13 @@ class MainWindow(QMainWindow):
                                         is_split_64bit = (
                                             len(editable_changes) >= 2
                                             and first_editable_change.size == 4
-                                            and first_editable_change.formula == "value & 0xFFFFFFFF"
+                                            and first_editable_change.formula
+                                            == "value & 0xFFFFFFFF"
                                             and editable_changes[1].size == 1
-                                            and editable_changes[1].formula == "value >> 32"
+                                            and editable_changes[1].formula
+                                            == "value >> 32"
                                         )
-                                        
+
                                         if is_split_64bit:
                                             # Read low 32 bits from first change
                                             first_offset = self._resolve_change_offset(
@@ -1933,18 +1932,26 @@ class MainWindow(QMainWindow):
                                                 raise ValueError(
                                                     "Failed to resolve offset for first editable change"
                                                 )
-                                            first_addr = self._offset_to_rva(first_offset, binary)
-                                            low_32_bits_bytes = binary.get_data(first_addr, 4)
+                                            first_addr = self._offset_to_rva(
+                                                first_offset, binary
+                                            )
+                                            low_32_bits_bytes = binary.get_data(
+                                                first_addr, 4
+                                            )
                                             low_32_bits = int.from_bytes(
                                                 low_32_bits_bytes, byteorder="little"
                                             )
-                                            
+
                                             # Read high byte from second change
                                             second_editable_change = editable_changes[1]
-                                            second_binary_name = self._get_change_binary(
-                                                second_editable_change, patch.file
+                                            second_binary_name = (
+                                                self._get_change_binary(
+                                                    second_editable_change, patch.file
+                                                )
                                             )
-                                            _, second_binary = self.binary_files[second_binary_name]
+                                            _, second_binary = self.binary_files[
+                                                second_binary_name
+                                            ]
                                             second_offset = self._resolve_change_offset(
                                                 second_editable_change, second_binary
                                             )
@@ -1952,12 +1959,16 @@ class MainWindow(QMainWindow):
                                                 raise ValueError(
                                                     "Failed to resolve offset for second editable change"
                                                 )
-                                            second_addr = self._offset_to_rva(second_offset, second_binary)
-                                            high_byte_bytes = second_binary.get_data(second_addr, 1)
+                                            second_addr = self._offset_to_rva(
+                                                second_offset, second_binary
+                                            )
+                                            high_byte_bytes = second_binary.get_data(
+                                                second_addr, 1
+                                            )
                                             high_byte = int.from_bytes(
                                                 high_byte_bytes, byteorder="little"
                                             )
-                                            
+
                                             # Reconstruct full 64-bit value
                                             current = (high_byte << 32) | low_32_bits
                                         else:
@@ -1969,23 +1980,31 @@ class MainWindow(QMainWindow):
                                                 raise ValueError(
                                                     "Failed to resolve offset for first editable change"
                                                 )
-                                            addr = self._offset_to_rva(first_offset, binary)
+                                            addr = self._offset_to_rva(
+                                                first_offset, binary
+                                            )
                                             data_bytes = binary.get_data(
                                                 addr, first_editable_change.size
                                             )
-                                            data_type = first_editable_change.type or "int"
+                                            data_type = (
+                                                first_editable_change.type or "int"
+                                            )
                                             if data_type == "double":
                                                 if first_editable_change.size != 8:
                                                     raise ValueError(
                                                         f"Double type requires size 8, but got {first_editable_change.size}"
                                                     )
-                                                current = struct.unpack("<d", data_bytes)[0]
+                                                current = struct.unpack(
+                                                    "<d", data_bytes
+                                                )[0]
                                             elif data_type == "float":
                                                 if first_editable_change.size != 4:
                                                     raise ValueError(
                                                         f"Float type requires size 4, but got {first_editable_change.size}"
                                                     )
-                                                current = struct.unpack("<f", data_bytes)[0]
+                                                current = struct.unpack(
+                                                    "<f", data_bytes
+                                                )[0]
                                             else:
                                                 current = int.from_bytes(
                                                     data_bytes, byteorder="little"
@@ -2004,39 +2023,72 @@ class MainWindow(QMainWindow):
                                                     break
                                                 low_change = editable_changes[i]
                                                 high_change = editable_changes[i + 1]
-                                                
-                                                if low_change.size != 4 or high_change.size != 1:
+
+                                                if (
+                                                    low_change.size != 4
+                                                    or high_change.size != 1
+                                                ):
                                                     all_same = False
                                                     break
-                                                
+
                                                 # Read low 32 bits
-                                                low_binary_name = self._get_change_binary(
-                                                    low_change, patch.file
+                                                low_binary_name = (
+                                                    self._get_change_binary(
+                                                        low_change, patch.file
+                                                    )
                                                 )
-                                                _, low_binary = self.binary_files[low_binary_name]
-                                                low_offset = self._resolve_change_offset(low_change, low_binary)
+                                                _, low_binary = self.binary_files[
+                                                    low_binary_name
+                                                ]
+                                                low_offset = (
+                                                    self._resolve_change_offset(
+                                                        low_change, low_binary
+                                                    )
+                                                )
                                                 if low_offset is None:
                                                     all_same = False
                                                     break
-                                                low_addr = self._offset_to_rva(low_offset, low_binary)
-                                                low_bytes = low_binary.get_data(low_addr, 4)
-                                                pair_low = int.from_bytes(low_bytes, byteorder="little")
-                                                
-                                                # Read high byte
-                                                high_binary_name = self._get_change_binary(
-                                                    high_change, patch.file
+                                                low_addr = self._offset_to_rva(
+                                                    low_offset, low_binary
                                                 )
-                                                _, high_binary = self.binary_files[high_binary_name]
-                                                high_offset = self._resolve_change_offset(high_change, high_binary)
+                                                low_bytes = low_binary.get_data(
+                                                    low_addr, 4
+                                                )
+                                                pair_low = int.from_bytes(
+                                                    low_bytes, byteorder="little"
+                                                )
+
+                                                # Read high byte
+                                                high_binary_name = (
+                                                    self._get_change_binary(
+                                                        high_change, patch.file
+                                                    )
+                                                )
+                                                _, high_binary = self.binary_files[
+                                                    high_binary_name
+                                                ]
+                                                high_offset = (
+                                                    self._resolve_change_offset(
+                                                        high_change, high_binary
+                                                    )
+                                                )
                                                 if high_offset is None:
                                                     all_same = False
                                                     break
-                                                high_addr = self._offset_to_rva(high_offset, high_binary)
-                                                high_bytes = high_binary.get_data(high_addr, 1)
-                                                pair_high = int.from_bytes(high_bytes, byteorder="little")
-                                                
+                                                high_addr = self._offset_to_rva(
+                                                    high_offset, high_binary
+                                                )
+                                                high_bytes = high_binary.get_data(
+                                                    high_addr, 1
+                                                )
+                                                pair_high = int.from_bytes(
+                                                    high_bytes, byteorder="little"
+                                                )
+
                                                 # Reconstruct and compare
-                                                pair_value = (pair_high << 32) | pair_low
+                                                pair_value = (
+                                                    pair_high << 32
+                                                ) | pair_low
                                                 if pair_value != current:
                                                     all_same = False
                                                     break
@@ -2058,8 +2110,10 @@ class MainWindow(QMainWindow):
                                                 _, change_binary = self.binary_files[
                                                     change_binary_name
                                                 ]
-                                                change_offset = self._resolve_change_offset(
-                                                    change, change_binary
+                                                change_offset = (
+                                                    self._resolve_change_offset(
+                                                        change, change_binary
+                                                    )
                                                 )
                                                 if change_offset is None:
                                                     all_same = False
@@ -2067,8 +2121,10 @@ class MainWindow(QMainWindow):
                                                 change_addr = self._offset_to_rva(
                                                     change_offset, change_binary
                                                 )
-                                                change_data_bytes = change_binary.get_data(
-                                                    change_addr, change.size
+                                                change_data_bytes = (
+                                                    change_binary.get_data(
+                                                        change_addr, change.size
+                                                    )
                                                 )
                                                 change_data_type = change.type or "int"
                                                 if change_data_type == "double":
@@ -2098,7 +2154,10 @@ class MainWindow(QMainWindow):
                                                     "double",
                                                     "float",
                                                 ) or first_type in ("double", "float"):
-                                                    if abs(change_value - current) > 1e-10:
+                                                    if (
+                                                        abs(change_value - current)
+                                                        > 1e-10
+                                                    ):
                                                         all_same = False
                                                         break
                                                 else:
