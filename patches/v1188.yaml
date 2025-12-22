@@ -692,3 +692,76 @@ patches:
         size: 1
       - offset: 0x506DD2 + 1
         size: 1
+  - name: Server stall price limit
+    group: Limits
+    description: |
+      Adjust the maximum price limit for server stalls in both client and gameserver.
+    editable: true
+    file: sro_client
+    changes:
+      - offset: 0x005DF9E0 + 1
+        size: 4
+        formula: "value & 0xFFFFFFFF"
+      - offset: 0x005DF9DE + 1
+        size: 1
+        formula: "value >> 32"
+      - offset: 0x005EA685 + 1
+        size: 4
+        formula: "value & 0xFFFFFFFF"
+      - offset: 0x005EA683 + 1
+        size: 1
+        formula: "value >> 32"
+      - offset: 0x006B2005 + 1
+        size: 4
+        formula: "value & 0xFFFFFFFF"
+      - offset: 0x006B2003 + 1
+        size: 1
+        formula: "value >> 32"
+      - offset: 0x006BA767 + 1
+        size: 4
+        formula: "value & 0xFFFFFFFF"
+      - offset: 0x006BA765 + 1
+        size: 1
+        formula: "value >> 32"
+      - offset: 0x00471B07 + 1
+        size: 4
+        formula: "value & 0xFFFFFFFF"
+        file: gameserver
+      - offset: 0x00471B00 + 2
+        size: 1
+        formula: "value >> 32"
+        file: gameserver
+      - offset: 0x00473008 + 1
+        size: 4
+        formula: "value & 0xFFFFFFFF"
+        file: gameserver
+      - offset: 0x00472FF5 + 2
+        size: 1
+        formula: "value >> 32"
+        file: gameserver
+      - offset: 0x0047ABE3 + 1
+        size: 4
+        formula: "value & 0xFFFFFFFF"
+        file: gameserver
+      - offset: 0x0047ABD8 + 2
+        size: 1
+        formula: "value >> 32"
+        file: gameserver
+  - name: Exchange gold limit
+    group: Limits
+    description: |
+      Adjust the maximum gold amount that can be exchanged.
+      Maximum value is 4294967295 (32-bit unsigned integer limit).
+    editable: true
+    file: gameserver
+    changes:
+      - offset: 0x00480F5E + 4
+        size: 4
+      - offset: 0x004D8F1A + 2
+        size: 4
+      - offset: 0x004D8F22 + 2
+        size: 4
+      - offset: 0x004F7734 + 2
+        size: 4
+      - offset: 0x004F7746 + 4
+        size: 4

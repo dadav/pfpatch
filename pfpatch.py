@@ -1763,102 +1763,198 @@ class MainWindow(QMainWindow):
                                 # Check if all editable changes have the same value
                                 if first_editable_change.size is not None:
                                     try:
-                                        first_offset = self._resolve_change_offset(
-                                            first_editable_change, binary
+                                        # Special handling for split 64-bit values (high byte + low 32 bits)
+                                        # Pattern: first change is 4 bytes with formula "value & 0xFFFFFFFF",
+                                        # second change is 1 byte with formula "value >> 32"
+                                        is_split_64bit = (
+                                            len(editable_changes) >= 2
+                                            and first_editable_change.size == 4
+                                            and first_editable_change.formula == "value & 0xFFFFFFFF"
+                                            and editable_changes[1].size == 1
+                                            and editable_changes[1].formula == "value >> 32"
                                         )
-                                        if first_offset is None:
-                                            raise ValueError(
-                                                "Failed to resolve offset for first editable change"
+                                        
+                                        if is_split_64bit:
+                                            # Read low 32 bits from first change
+                                            first_offset = self._resolve_change_offset(
+                                                first_editable_change, binary
                                             )
-                                        addr = self._offset_to_rva(first_offset, binary)
-                                        data_bytes = binary.get_data(
-                                            addr, first_editable_change.size
-                                        )
-                                        data_type = first_editable_change.type or "int"
-                                        if data_type == "double":
-                                            if first_editable_change.size != 8:
+                                            if first_offset is None:
                                                 raise ValueError(
-                                                    f"Double type requires size 8, but got {first_editable_change.size}"
+                                                    "Failed to resolve offset for first editable change"
                                                 )
-                                            current = struct.unpack("<d", data_bytes)[0]
-                                        elif data_type == "float":
-                                            if first_editable_change.size != 4:
+                                            first_addr = self._offset_to_rva(first_offset, binary)
+                                            low_32_bits_bytes = binary.get_data(first_addr, 4)
+                                            low_32_bits = int.from_bytes(
+                                                low_32_bits_bytes, byteorder="little"
+                                            )
+                                            
+                                            # Read high byte from second change
+                                            second_editable_change = editable_changes[1]
+                                            second_binary_name = self._get_change_binary(
+                                                second_editable_change, patch.file
+                                            )
+                                            _, second_binary = self.binary_files[second_binary_name]
+                                            second_offset = self._resolve_change_offset(
+                                                second_editable_change, second_binary
+                                            )
+                                            if second_offset is None:
                                                 raise ValueError(
-                                                    f"Float type requires size 4, but got {first_editable_change.size}"
+                                                    "Failed to resolve offset for second editable change"
                                                 )
-                                            current = struct.unpack("<f", data_bytes)[0]
+                                            second_addr = self._offset_to_rva(second_offset, second_binary)
+                                            high_byte_bytes = second_binary.get_data(second_addr, 1)
+                                            high_byte = int.from_bytes(
+                                                high_byte_bytes, byteorder="little"
+                                            )
+                                            
+                                            # Reconstruct full 64-bit value
+                                            current = (high_byte << 32) | low_32_bits
                                         else:
-                                            current = int.from_bytes(
-                                                data_bytes, byteorder="little"
+                                            # Normal handling for single-location values
+                                            first_offset = self._resolve_change_offset(
+                                                first_editable_change, binary
                                             )
+                                            if first_offset is None:
+                                                raise ValueError(
+                                                    "Failed to resolve offset for first editable change"
+                                                )
+                                            addr = self._offset_to_rva(first_offset, binary)
+                                            data_bytes = binary.get_data(
+                                                addr, first_editable_change.size
+                                            )
+                                            data_type = first_editable_change.type or "int"
+                                            if data_type == "double":
+                                                if first_editable_change.size != 8:
+                                                    raise ValueError(
+                                                        f"Double type requires size 8, but got {first_editable_change.size}"
+                                                    )
+                                                current = struct.unpack("<d", data_bytes)[0]
+                                            elif data_type == "float":
+                                                if first_editable_change.size != 4:
+                                                    raise ValueError(
+                                                        f"Float type requires size 4, but got {first_editable_change.size}"
+                                                    )
+                                                current = struct.unpack("<f", data_bytes)[0]
+                                            else:
+                                                current = int.from_bytes(
+                                                    data_bytes, byteorder="little"
+                                                )
 
                                         # Verify all editable changes have the same value
                                         # Note: If sizes differ, we can't directly compare raw values,
                                         # so we'll mark as different and use the first change's value for display
+                                        # For split 64-bit values, we reconstruct the value from each pair
                                         all_same = True
-                                        for change in editable_changes[1:]:
-                                            # If sizes differ, we can't directly compare values
-                                            if (
-                                                change.size
-                                                != first_editable_change.size
-                                            ):
-                                                all_same = False
-                                                break
-                                            change_binary_name = (
-                                                self._get_change_binary(
-                                                    change, patch.file
+                                        if is_split_64bit:
+                                            # For split 64-bit values, verify all pairs have the same combined value
+                                            for i in range(2, len(editable_changes), 2):
+                                                if i + 1 >= len(editable_changes):
+                                                    all_same = False
+                                                    break
+                                                low_change = editable_changes[i]
+                                                high_change = editable_changes[i + 1]
+                                                
+                                                if low_change.size != 4 or high_change.size != 1:
+                                                    all_same = False
+                                                    break
+                                                
+                                                # Read low 32 bits
+                                                low_binary_name = self._get_change_binary(
+                                                    low_change, patch.file
                                                 )
-                                            )
-                                            _, change_binary = self.binary_files[
-                                                change_binary_name
-                                            ]
-                                            change_offset = self._resolve_change_offset(
-                                                change, change_binary
-                                            )
-                                            if change_offset is None:
-                                                all_same = False
-                                                break
-                                            change_addr = self._offset_to_rva(
-                                                change_offset, change_binary
-                                            )
-                                            change_data_bytes = change_binary.get_data(
-                                                change_addr, change.size
-                                            )
-                                            change_data_type = change.type or "int"
-                                            if change_data_type == "double":
-                                                if change.size != 8:
+                                                _, low_binary = self.binary_files[low_binary_name]
+                                                low_offset = self._resolve_change_offset(low_change, low_binary)
+                                                if low_offset is None:
                                                     all_same = False
                                                     break
-                                                change_value = struct.unpack(
-                                                    "<d", change_data_bytes
-                                                )[0]
-                                            elif change_data_type == "float":
-                                                if change.size != 4:
-                                                    all_same = False
-                                                    break
-                                                change_value = struct.unpack(
-                                                    "<f", change_data_bytes
-                                                )[0]
-                                            else:
-                                                change_value = int.from_bytes(
-                                                    change_data_bytes,
-                                                    byteorder="little",
+                                                low_addr = self._offset_to_rva(low_offset, low_binary)
+                                                low_bytes = low_binary.get_data(low_addr, 4)
+                                                pair_low = int.from_bytes(low_bytes, byteorder="little")
+                                                
+                                                # Read high byte
+                                                high_binary_name = self._get_change_binary(
+                                                    high_change, patch.file
                                                 )
-                                            # For floats/doubles, use approximate comparison due to floating point precision
-                                            first_type = (
-                                                first_editable_change.type or "int"
-                                            )
-                                            if change_data_type in (
-                                                "double",
-                                                "float",
-                                            ) or first_type in ("double", "float"):
-                                                if abs(change_value - current) > 1e-10:
+                                                _, high_binary = self.binary_files[high_binary_name]
+                                                high_offset = self._resolve_change_offset(high_change, high_binary)
+                                                if high_offset is None:
                                                     all_same = False
                                                     break
-                                            else:
-                                                if change_value != current:
+                                                high_addr = self._offset_to_rva(high_offset, high_binary)
+                                                high_bytes = high_binary.get_data(high_addr, 1)
+                                                pair_high = int.from_bytes(high_bytes, byteorder="little")
+                                                
+                                                # Reconstruct and compare
+                                                pair_value = (pair_high << 32) | pair_low
+                                                if pair_value != current:
                                                     all_same = False
                                                     break
+                                        else:
+                                            # Normal comparison for non-split values
+                                            for change in editable_changes[1:]:
+                                                # If sizes differ, we can't directly compare values
+                                                if (
+                                                    change.size
+                                                    != first_editable_change.size
+                                                ):
+                                                    all_same = False
+                                                    break
+                                                change_binary_name = (
+                                                    self._get_change_binary(
+                                                        change, patch.file
+                                                    )
+                                                )
+                                                _, change_binary = self.binary_files[
+                                                    change_binary_name
+                                                ]
+                                                change_offset = self._resolve_change_offset(
+                                                    change, change_binary
+                                                )
+                                                if change_offset is None:
+                                                    all_same = False
+                                                    break
+                                                change_addr = self._offset_to_rva(
+                                                    change_offset, change_binary
+                                                )
+                                                change_data_bytes = change_binary.get_data(
+                                                    change_addr, change.size
+                                                )
+                                                change_data_type = change.type or "int"
+                                                if change_data_type == "double":
+                                                    if change.size != 8:
+                                                        all_same = False
+                                                        break
+                                                    change_value = struct.unpack(
+                                                        "<d", change_data_bytes
+                                                    )[0]
+                                                elif change_data_type == "float":
+                                                    if change.size != 4:
+                                                        all_same = False
+                                                        break
+                                                    change_value = struct.unpack(
+                                                        "<f", change_data_bytes
+                                                    )[0]
+                                                else:
+                                                    change_value = int.from_bytes(
+                                                        change_data_bytes,
+                                                        byteorder="little",
+                                                    )
+                                                # For floats/doubles, use approximate comparison due to floating point precision
+                                                first_type = (
+                                                    first_editable_change.type or "int"
+                                                )
+                                                if change_data_type in (
+                                                    "double",
+                                                    "float",
+                                                ) or first_type in ("double", "float"):
+                                                    if abs(change_value - current) > 1e-10:
+                                                        all_same = False
+                                                        break
+                                                else:
+                                                    if change_value != current:
+                                                        all_same = False
+                                                        break
 
                                         # Apply display formula if specified (convert stored to display format)
                                         display_value = current
