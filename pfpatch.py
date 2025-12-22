@@ -304,7 +304,7 @@ class Settings(BaseModel):
     binary_paths: Dict[str, str] = Field(default_factory=dict)
     config_dir: Optional[str] = None
     selected_config: Optional[str] = None
-    enable_binary_backups: bool = False
+    enable_binary_backups: bool = True
 
 
 class MainWindow(QMainWindow):
@@ -322,7 +322,7 @@ class MainWindow(QMainWindow):
         self.patches: Dict[str, Patch] = {}
         self.config_dir: Optional[str] = None
         self.saved_selected_config: Optional[str] = None
-        self.enable_binary_backups: bool = False
+        self.enable_binary_backups: bool = True
 
         # Set backup directory - use executable directory for onefile, or current dir for script
         if getattr(sys, "frozen", False):
@@ -622,25 +622,23 @@ class MainWindow(QMainWindow):
                         self.saved_binary_paths = settings.binary_paths or {}
                         self.config_dir = settings.config_dir
                         self.saved_selected_config = settings.selected_config
-                        self.enable_binary_backups = (
-                            settings.enable_binary_backups or False
-                        )
+                        self.enable_binary_backups = settings.enable_binary_backups
                     else:
                         self.config_dir = None
                         self.saved_selected_config = None
-                        self.enable_binary_backups = False
+                        self.enable_binary_backups = True
             except (yaml.YAMLError, ValueError, KeyError) as e:
                 QMessageBox.warning(self, "Warning", f"Failed to load settings: {e}")
                 self.config_dir = None
                 self.saved_selected_config = None
-                self.enable_binary_backups = False
+                self.enable_binary_backups = True
             except Exception as e:
                 QMessageBox.warning(
                     self, "Warning", f"Unexpected error loading settings: {e}"
                 )
                 self.config_dir = None
                 self.saved_selected_config = None
-                self.enable_binary_backups = False
+                self.enable_binary_backups = True
         else:
             self.config_dir = None
             self.saved_selected_config = None
@@ -786,6 +784,152 @@ class MainWindow(QMainWindow):
                 f"Failed to create binary backup for {binary_name}: {e}",
             )
             return False
+
+    def restore_binary_file(self, binary_name: str) -> bool:
+        """Restore a binary file from backup.
+
+        Args:
+            binary_name: Name of the binary to restore
+
+        Returns:
+            True if restoration was successful, False otherwise
+
+        Note:
+            Shows warnings if backup doesn't exist or restoration fails.
+        """
+        if binary_name not in self.binary_files:
+            QMessageBox.warning(
+                self,
+                "Warning",
+                f"Binary {binary_name} is not loaded. Please load it first.",
+            )
+            return False
+
+        backup_path = self.get_binary_backup_path(binary_name)
+
+        if not backup_path.exists():
+            QMessageBox.warning(
+                self,
+                "Warning",
+                f"No backup found for {binary_name}!",
+            )
+            return False
+
+        binary_path, _ = self.binary_files[binary_name]
+
+        try:
+            shutil.copy2(backup_path, binary_path)
+            # Reload the binary after restoration
+            self._close_binary(binary_name)
+            binary = pefile.PE(binary_path, fast_load=True)
+            self.binary_files[binary_name] = (binary_path, binary)
+            return True
+        except (IOError, OSError, shutil.Error) as e:
+            QMessageBox.warning(
+                self,
+                "Warning",
+                f"Failed to restore binary {binary_name}: {e}",
+            )
+            return False
+        except pefile.PEFormatError as e:
+            QMessageBox.warning(
+                self,
+                "Warning",
+                f"Restored file is not a valid PE file: {e}",
+            )
+            return False
+
+    def restore_all_binaries(self) -> None:
+        """Restore all loaded binaries from their backups.
+
+        Shows a confirmation dialog before restoring, and displays
+        success/error messages for each binary.
+        """
+        if not self.binary_files:
+            QMessageBox.information(
+                self,
+                "Info",
+                "No binaries are currently loaded.",
+            )
+            return
+
+        # Check which binaries have backups
+        binaries_with_backups = [
+            name
+            for name in self.binary_files.keys()
+            if self.binary_backup_exists(name)
+        ]
+
+        if not binaries_with_backups:
+            QMessageBox.information(
+                self,
+                "Info",
+                "No backups found for any loaded binaries.",
+            )
+            return
+
+        # Confirm restoration
+        reply = QMessageBox.question(
+            self,
+            "Confirm Restore",
+            f"Restore {len(binaries_with_backups)} binary/binar{'y' if len(binaries_with_backups) == 1 else 'ies'} from backup?\n\n"
+            f"This will overwrite the current files: {', '.join(binaries_with_backups)}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        # Restore each binary
+        restored = []
+        failed = []
+        for binary_name in binaries_with_backups:
+            if self.restore_binary_file(binary_name):
+                restored.append(binary_name)
+            else:
+                failed.append(binary_name)
+
+        # Update UI after restoration
+        if self.current_config:
+            self.update_patches_ui(self.current_config.patches)
+        self.update_patch_button_state()
+        self.update_restore_button_state()
+
+        # Show results
+        if restored and not failed:
+            QMessageBox.information(
+                self,
+                "Success",
+                f"Successfully restored {len(restored)} binary/binar{'y' if len(restored) == 1 else 'ies'}:\n"
+                + "\n".join(restored),
+            )
+        elif restored and failed:
+            QMessageBox.warning(
+                self,
+                "Partial Success",
+                f"Restored: {', '.join(restored)}\n\n"
+                f"Failed: {', '.join(failed)}",
+            )
+        elif failed:
+            QMessageBox.warning(
+                self,
+                "Error",
+                f"Failed to restore: {', '.join(failed)}",
+            )
+
+    def update_restore_button_state(self) -> None:
+        """Enable restore button if at least one loaded binary has a backup.
+
+        Checks all currently loaded binaries to see if any have backups.
+        """
+        if not hasattr(self, "restore_btn"):
+            return
+
+        has_backup = any(
+            self.binary_backup_exists(name) for name in self.binary_files.keys()
+        )
+        self.restore_btn.setEnabled(has_backup)
 
     def is_binary_patched(self, binary_name: str) -> bool:
         """Check if binary has been patched (backup exists).
@@ -1438,6 +1582,9 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(self, "Success", "\n\n".join(success_parts))
             else:
                 QMessageBox.information(self, "Info", "No changes to apply.")
+            
+            # Update restore button state in case backups were created
+            self.update_restore_button_state()
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to apply patches: {e}")
 
@@ -1478,6 +1625,7 @@ class MainWindow(QMainWindow):
                 if self.current_config:
                     self.update_patches_ui(self.current_config.patches)
                 self.update_patch_button_state()
+                self.update_restore_button_state()
 
             except pefile.PEFormatError as e:
                 QMessageBox.critical(self, "Error", f"Invalid PE file format: {str(e)}")
@@ -1603,6 +1751,8 @@ class MainWindow(QMainWindow):
         # Close all binary files before clearing
         for binary_name in list(self.binary_files.keys()):
             self._close_binary(binary_name)
+        
+        self.update_restore_button_state()
 
     def config_changed(self, index: int) -> None:
         """Handle configuration file selection change.
@@ -2230,6 +2380,7 @@ class MainWindow(QMainWindow):
             self.files_layout.addLayout(binary_layout)
 
         self.files_layout.addStretch()
+        self.update_restore_button_state()
 
     def init_ui(self) -> None:
         """Initialize the user interface.
@@ -2297,7 +2448,8 @@ class MainWindow(QMainWindow):
         patches_layout.addWidget(scroll)
         patches_group.setLayout(patches_layout)
         # -----------------------------------------
-        # Binary backup checkbox
+        # Binary backup checkbox and restore button
+        backup_restore_layout = QHBoxLayout()
         self.binary_backup_checkbox = QCheckBox("Create backup before patching")
         self.binary_backup_checkbox.setToolTip(
             "Backup the whole binary file before patching (only if no backup exists)"
@@ -2305,8 +2457,19 @@ class MainWindow(QMainWindow):
         self.binary_backup_checkbox.setChecked(self.enable_binary_backups)
         self.binary_backup_checkbox.stateChanged.connect(self._on_binary_backup_changed)
 
+        self.restore_btn = QPushButton("Restore Binaries")
+        self.restore_btn.setToolTip(
+            "Restore all loaded binaries from their backups (only enabled if backups exist)"
+        )
+        self.restore_btn.clicked.connect(self.restore_all_binaries)
+        self.restore_btn.setEnabled(False)
+
+        backup_restore_layout.addWidget(self.binary_backup_checkbox)
+        backup_restore_layout.addStretch()
+        backup_restore_layout.addWidget(self.restore_btn)
+
         # -----------------------------------------
-        #
+        # Patch button
         self.patch_btn = QPushButton("Patch")
         self.patch_btn.clicked.connect(self.apply_patches)
         self.patch_btn.setEnabled(False)
@@ -2314,7 +2477,7 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(config_group)
         main_layout.addWidget(files_group)
         main_layout.addWidget(patches_group)
-        main_layout.addWidget(self.binary_backup_checkbox)
+        main_layout.addLayout(backup_restore_layout)
         main_layout.addWidget(self.patch_btn)
 
     def _on_binary_backup_changed(self, state: int) -> None:
