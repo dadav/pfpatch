@@ -2,7 +2,7 @@
 
 ![UI](ui.png)
 
-A graphical tool for patching Windows PE (Portable Executable) binary files. It allows you to modify binary files by changing specific byte values at given offsets or by searching for patterns.
+A graphical tool for patch private server files (silkroad).
 
 ## Features
 
