@@ -2,178 +2,67 @@
 
 ![UI](ui.png)
 
-A graphical tool for patch private server files (silkroad).
+A simple tool to patch Silkroad private server files with an easy-to-use graphical interface.
 
-## Features
+## Quick Start
 
-- Graphical user interface built with PyQt6
-- Support for multiple binary files in a single configuration
-- Editable patches with real-time value input
-- Pattern-based patching with wildcard support
-- Formula support for calculated values
-- Automatic backup of original bytes before patching
-- Restore functionality to revert patches
-- Persistent patch directory (works with PyInstaller distributions)
+### Download & Install
 
-## Installation
+1. Download the latest release from [Releases](https://github.com/dadav/pfpatch/releases)
+2. Extract and run:
+   - **Windows**: `pfpatch-vX.X.X-windows.exe`
+   - **Linux**: `pfpatch-vX.X.X-linux`
 
-### Pre-built Executables
+On first run, patch files will be copied to a `patches` folder next to the executable.
 
-Download the latest release from the [Releases](https://github.com/dadav/pfpatch/releases) page:
+### How to Use
 
-- Windows: `pfpatch-vX.X.X-windows.exe`
-- Linux: `pfpatch-vX.X.X-linux`
+1. **Select a patch config** - Choose a YAML file from the dropdown (in the `patches` folder)
+2. **Select your game files** - Click "Select" next to each file name and choose your game executables (e.g., `SR_Gameserver.exe`, `GatewayServer.exe`)
+3. **Configure patches**:
+   - **Editable patches**: Enter a number in the text field (e.g., level cap, max characters)
+   - **Regular patches**: Check the box to enable/disable
+4. **Apply** - Click "Patch" to apply all enabled patches
+5. **Restore** - Clear values or uncheck boxes, then click "Patch" again to restore original files
 
-Extract and run the executable. On first run, bundled patch files will be copied to a `patches` directory next to the executable.
+**Note**: The tool automatically backs up your files before patching, so you can always restore them.
 
-### From Source
+## Creating Patch Files
 
-Requirements:
+Patch files are YAML configuration files placed in the `patches` directory. Here are the most common patterns:
 
-- Python 3.12 or higher
-- pip or uv package manager
-
-Install dependencies:
-
-```bash
-pip install -r requirements.txt
-# or with uv
-uv sync
-```
-
-Run the application:
-
-```bash
-python pfpatch.py
-# or with uv
-uv run pfpatch.py
-```
-
-## Usage
-
-1. **Launch the application** - The GUI will open with the Config section at the top.
-
-2. **Select patch configuration** - Use the dropdown to select a YAML configuration file from the patches directory.
-
-3. **Load binary files** - For each binary file required by the patches:
-   - Click "Select" next to the binary name
-   - Navigate to and select the target executable file
-   - The path will be saved for future sessions
-
-4. **Configure patches**:
-   - **Editable patches**: Enter a numeric value in the text field
-   - **Non-editable patches**: Check the checkbox to enable the patch
-
-5. **Apply patches** - Click the "Patch" button to apply all enabled patches to the binary files.
-
-6. **Restore patches** - To revert changes:
-   - For editable patches: Clear the value field and apply
-   - For non-editable patches: Uncheck the checkbox and apply
-
-## Configuration File Format
-
-Configuration files are YAML files that define binary files and patches. Place them in the `patches` directory.
-
-### Basic Structure
-
-```yaml
-files:
-  binary_name:
-    default: "DefaultFileName.exe"
-
-patches:
-  - name: "Patch Name"
-    description: "Optional description"
-    editable: false
-    file: binary_name
-    changes:
-      - offset: 0x123456
-        value: "48 8B 05"
-```
-
-### Files Section
-
-Define the binary files that can be patched:
+### Basic Patch (simple byte replacement)
 
 ```yaml
 files:
   gameserver:
     default: "SR_Gameserver.exe"
-  gateway:
-    default: "GatewayServer.exe"
-  sro_client:
-    default: "sro_client.exe"
-```
 
-The `default` field is optional and used as a hint in the file selection dialog.
-
-### Patches Section
-
-#### Simple Non-Editable Patch
-
-A patch that replaces bytes with a fixed value:
-
-```yaml
 patches:
   - name: "Disable login captcha"
     description: "Removes the login captcha requirement"
     editable: false
-    file: gateway
+    file: gameserver
     changes:
       - offset: 0x40509d
         value: "30 6e 40"
 ```
 
-#### Multiple Changes in One Patch
-
-Apply the same patch to multiple locations:
-
-```yaml
-patches:
-  - name: "Fix crash after level 110"
-    editable: false
-    file: gameserver
-    changes:
-      - offset: 0x4e5475
-        value: "E0"
-      - offset: 0x4e5476
-        value: "E1"
-      - offset: 0x4e5477
-        value: "E2"
-```
-
-#### Editable Patch (Single Byte)
-
-Allow users to input a value that gets written to the binary:
+### Editable Patch (Let users enter values)
 
 ```yaml
 patches:
   - name: "Max characters per account"
-    description: "Adjust the number of characters per account"
     editable: true
     file: sro_client
     changes:
       - offset: 0x85de6d
-        size: 1
+        size: 1  # 1 byte = 0-255, 2 bytes = 0-65535, 4 bytes = larger numbers
 ```
 
-#### Editable Patch (Multiple Bytes)
+### Multiple Locations
 
-For values larger than one byte, specify the size:
-
-```yaml
-patches:
-  - name: "Max job level"
-    editable: true
-    file: gameserver
-    changes:
-      - offset: 0x60de6c
-        size: 4
-```
-
-#### Editable Patch with Multiple Locations
-
-Apply the same value to multiple offsets:
+Apply the same patch to multiple offsets:
 
 ```yaml
 patches:
@@ -187,33 +76,13 @@ patches:
         size: 1
 ```
 
-#### Patch Multiple Files
+### Pattern Matching (for different game versions)
 
-A single patch can modify multiple binary files:
-
-```yaml
-patches:
-  - name: "Max characters per account"
-    editable: true
-    file: client
-    changes:
-      - offset: 0x85de6d
-        size: 1
-      - offset: 0x40F47F
-        size: 1
-        file: shardmanager
-      - offset: 0x429B86
-        size: 1
-        file: shardmanager
-```
-
-#### Pattern-Based Patching
-
-Use pattern matching instead of fixed offsets. Useful when offsets change between versions:
+Instead of fixed offsets, search for byte patterns:
 
 ```yaml
 patches:
-  - name: "Patch using pattern"
+  - name: "Pattern-based patch"
     editable: false
     file: gameserver
     changes:
@@ -221,148 +90,63 @@ patches:
         value: "90 90 90 90 90 90 90"
 ```
 
-Pattern format:
+- Use `??` as wildcards (matches any byte)
+- Useful when offsets change between game versions
 
-- Hex bytes separated by spaces
-- `??` represents a wildcard byte (matches any value)
-- Example: `"48 8B 05 ?? ?? ?? ??"` matches `48 8B 05` followed by any 4 bytes
+### Value Formulas
 
-#### Pattern with Offset
-
-Apply the patch at a specific offset within the matched pattern:
+Convert user input before writing to the file:
 
 ```yaml
 patches:
-  - name: "Patch pattern with offset"
-    editable: false
-    file: gameserver
-    changes:
-      - pattern: "48 8B 05 ?? ?? ?? ?? 89 45"
-        pattern_offset: 3
-        value: "90 90 90"
-```
-
-This matches the pattern and applies the patch 3 bytes into the match.
-
-#### Editable Patch with Formula
-
-Apply a formula to the input value before writing. The formula is applied per change:
-
-```yaml
-patches:
-  - name: "Gameserver spawn limit"
+  - name: "Spawn limit"
     editable: true
     file: gameserver
     changes:
       - offset: 0x54d6da
         size: 4
-        formula: "value * 0x1D0"
+        formula: "value * 0x1D0"  # Multiply user input by 0x1D0
 ```
 
-The formula uses Python syntax and must reference `value` as the input. Supported operations: `+`, `-`, `*`, `/`, `//`, `%`, `**`, `&`, `|`, `^`, `<<`, `>>`, and functions: `abs`, `min`, `max`, `pow`, `round`.
+### Display Conversion
 
-#### Display and Input Formulas
-
-Convert between display values and stored values:
+Show values in a different format than stored:
 
 ```yaml
 patches:
-  - name: "Guild leaving penalty"
-    description: "The days of penalty for leaving a guild"
+  - name: "Guild penalty days"
     editable: true
     file: gameserver
     changes:
       - offset: 0x5c3f95
         size: 4
-        display_formula: "value / (24 * 60 * 60)"
-        input_formula: "value * 24 * 60 * 60"
+        display_formula: "value / 86400"  # Show as days
+        input_formula: "value * 86400"    # Store as seconds
 ```
 
-- `display_formula`: Converts stored value (seconds) to display value (days) when reading from binary
-- `input_formula`: Converts display value (days) to stored value (seconds) when user enters a value
+Users enter days, but the game stores seconds.
 
-Users enter days, but the binary stores seconds.
+## Backup & Restore
 
-#### Formula vs Input Formula
+- Backups are automatically created in the `backups` folder
+- To restore: Clear editable values or uncheck patches, then click "Patch"
+- Original files are always preserved
 
-The key difference between `formula` and `input_formula`:
+## Advanced Usage
 
-- **`input_formula`**: Applied **once per patch** to convert the user's input to a base stored value. Applied before per-change formulas.
-- **`formula`**: Applied **per change** to calculate the final value written to each offset. Each change can have a different formula.
+### Building from Source
 
-Processing order when applying a patch:
+If you want to modify the tool:
 
-1. User enters value (e.g., "5" days)
-2. `input_formula` converts to base stored value (e.g., `value * 86400` = 432000 seconds)
-3. `formula` (per change) calculates final value (e.g., `value * 2` = 864000)
+```bash
+# Install dependencies
+pip install -r requirements.txt
 
-Example combining both:
-
-```yaml
-patches:
-  - name: "Spawn limits with multiplier"
-    editable: true
-    file: gameserver
-    changes:
-      - offset: 0x54d6da
-        size: 4
-        input_formula: "value * 100"
-        formula: "value * 0x1D0"
-      - offset: 0x54d6e0
-        size: 4
-        input_formula: "value * 100"
-        formula: "value * 0x200"
+# Run
+python pfpatch.py
 ```
 
-User enters "10":
-
-- `input_formula` converts: 10 \* 100 = 1000 (base stored value)
-- First change: 1000 \* 0x1D0 = 465920 (written to 0x54d6da)
-- Second change: 1000 \* 0x200 = 524288 (written to 0x54d6e0)
-
-#### Complex Example
-
-Combining multiple features:
-
-```yaml
-patches:
-  - name: "Complex patch example"
-    description: "Example showing multiple features"
-    editable: true
-    file: gameserver
-    changes:
-      - offset: 0x4e816d
-        size: 4
-        display_formula: "value / 86400"
-        input_formula: "value * 86400"
-        formula: "value + 0x100"
-      - pattern: "48 8B ?? ?? ?? ?? 89"
-        pattern_offset: 2
-        size: 4
-        formula: "value * 2"
-```
-
-## Backup and Restore
-
-The tool automatically creates backups before applying patches:
-
-- Backup files are stored in the `backups` directory
-- Format: `{binary_name}_backup.yaml`
-- Contains original byte values at each patched offset
-
-To restore:
-
-- For editable patches: Clear the value and apply
-- For non-editable patches: Uncheck the checkbox and apply
-
-Backups are preserved even if you modify the same offset multiple times.
-
-## Settings
-
-Settings are saved in `settings.yml`:
-
-- Binary file paths (persisted across sessions)
-- Last selected configuration directory
+**Requirements**: Python 3.12+
 
 ## License
 
