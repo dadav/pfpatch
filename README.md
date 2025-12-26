@@ -48,7 +48,7 @@ patches:
         value: "30 6e 40"
 ```
 
-### Editable Patch (Let users enter values)
+### Editable Patch (let users enter values)
 
 ```yaml
 patches:
@@ -57,7 +57,7 @@ patches:
     file: sro_client
     changes:
       - offset: 0x85de6d
-        size: 1  # 1 byte = 0-255, 2 bytes = 0-65535, 4 bytes = larger numbers
+        size: 1 # 1 byte = 0-255, 2 bytes = 0-65535, 4 bytes = larger numbers
 ```
 
 ### Multiple Locations
@@ -105,7 +105,7 @@ patches:
     changes:
       - offset: 0x54d6da
         size: 4
-        formula: "value * 0x1D0"  # Multiply user input by 0x1D0
+        formula: "value * 0x1D0" # Multiply user input by 0x1D0
 ```
 
 ### Display Conversion
@@ -120,8 +120,8 @@ patches:
     changes:
       - offset: 0x5c3f95
         size: 4
-        display_formula: "value / 86400"  # Show as days
-        input_formula: "value * 86400"    # Store as seconds
+        display_formula: "value / 86400" # Show as days
+        input_formula: "value * 86400" # Store as seconds
 ```
 
 Users enter days, but the game stores seconds.
