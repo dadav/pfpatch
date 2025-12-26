@@ -80,12 +80,17 @@ class PatchChange(BaseModel):
                 try:
                     # Evaluate the expression safely with restricted globals
                     # Only allow basic arithmetic operations
-                    result = eval(v, {"__builtins__": {}}, {})
+                    code = compile(v, "<offset_expression>", "eval")
+                    result = eval(code, {"__builtins__": {}}, {})
                     if not isinstance(result, (int, float)):
                         raise ValueError(
                             f"Offset expression must evaluate to a number: {v}"
                         )
                     return int(result)
+                except SyntaxError:
+                    raise ValueError(
+                        f"Invalid offset expression syntax: {v}. Must be valid arithmetic like '0x12345 + 4'"
+                    )
                 except Exception:
                     raise ValueError(
                         f"Invalid offset expression: {v}. Must be valid arithmetic like '0x12345 + 4'"
@@ -1013,7 +1018,7 @@ class MainWindow(QMainWindow):
                     "Warning",
                     "Failed to resolve offset for change: pattern not found or invalid",
                 )
-                return
+                continue  # Skip this change but continue with others
 
             # Handle repeat: backup all offsets that will be modified
             if change.value is not None and change.repeat is not None:
@@ -1034,13 +1039,21 @@ class MainWindow(QMainWindow):
                             }
                         )
                         existing_offsets.add(current_offset)
-                    except Exception as e:
+                    except (pefile.PEFormatError, ValueError, IndexError, AttributeError) as e:
                         QMessageBox.warning(
                             self,
                             "Warning",
                             f"Failed to read original bytes at offset {current_offset:#x}: {e}",
                         )
-                        return
+                        continue  # Skip this offset but continue with others
+                    except Exception as e:
+                        # Catch any other unexpected errors
+                        QMessageBox.warning(
+                            self,
+                            "Warning",
+                            f"Unexpected error reading bytes at offset {current_offset:#x}: {e}",
+                        )
+                        continue  # Skip this offset but continue with others
             else:
                 # Single offset backup (no repeat)
                 # Skip if this offset is already saved
@@ -1065,13 +1078,21 @@ class MainWindow(QMainWindow):
                         }
                     )
                     existing_offsets.add(resolved_offset)
-                except Exception as e:
+                except (pefile.PEFormatError, ValueError, IndexError, AttributeError) as e:
                     QMessageBox.warning(
                         self,
                         "Warning",
                         f"Failed to read original bytes at offset {resolved_offset:#x}: {e}",
                     )
-                    return
+                    continue  # Skip this change but continue with others
+                except Exception as e:
+                    # Catch any other unexpected errors
+                    QMessageBox.warning(
+                        self,
+                        "Warning",
+                        f"Unexpected error reading bytes at offset {resolved_offset:#x}: {e}",
+                    )
+                    continue  # Skip this change but continue with others
 
         # Merge existing and new data
         merged_data = existing_data + new_data
@@ -1222,7 +1243,7 @@ class MainWindow(QMainWindow):
                         binaries_to_modify.update(required_binaries)
                 else:
                     # For checkbox patches, include if checked
-                    if patch.widget.isChecked():
+                    if patch.widget is not None and patch.widget.isChecked():
                         binaries_to_modify.update(required_binaries)
 
             # Backup whole binaries if enabled and no backup exists
@@ -1417,7 +1438,9 @@ class MainWindow(QMainWindow):
                                         # Integer type
                                         final_value_int = int(final_value_calc)
 
-                                        # Check for overflow based on size
+                                        # Check for overflow based on size (unsigned integer)
+                                        # For signed integers, we'd need to check range [-2^(n-1), 2^(n-1)-1]
+                                        # but this code assumes unsigned integers
                                         max_value = (1 << (change.size * 8)) - 1
                                         if final_value_int > max_value:
                                             QMessageBox.warning(
@@ -1431,14 +1454,15 @@ class MainWindow(QMainWindow):
                                             QMessageBox.warning(
                                                 self,
                                                 "Error",
-                                                f"Value {final_value_int} is negative at offset {resolved_offset:#x}",
+                                                f"Value {final_value_int} is negative at offset {resolved_offset:#x}. "
+                                                f"Note: Only unsigned integers are supported.",
                                             )
                                             success = False
                                             break
 
                                         try:
                                             final_value = final_value_int.to_bytes(
-                                                change.size, byteorder="little"
+                                                change.size, byteorder="little", signed=False
                                             )
                                         except Exception as e:
                                             QMessageBox.warning(
@@ -1516,7 +1540,7 @@ class MainWindow(QMainWindow):
                         )
                         continue
                 else:
-                    if patch.widget.isChecked():
+                    if patch.widget is not None and patch.widget.isChecked():
                         for binary_name, changes in changes_by_binary.items():
                             self.save_original_bytes(binary_name, changes)
 
@@ -1641,7 +1665,8 @@ class MainWindow(QMainWindow):
         and are enabled. Enables the patch button if at least one such patch exists.
         """
         has_enabled_patch = any(
-            patch.widget.isEnabled() for patch in self.patches.values()
+            patch.widget is not None and patch.widget.isEnabled()
+            for patch in self.patches.values()
         )
         self.patch_btn.setEnabled(has_enabled_patch)
 
@@ -2258,8 +2283,6 @@ class MainWindow(QMainWindow):
                         locations_label.setStyleSheet("color: gray; font-size: 9pt;")
                         locations_label.setWordWrap(True)
                         patch_layout.addWidget(locations_label)
-
-                        patch.widget = value_widget
                     else:
                         value_widget = QCheckBox("Enable")
                         value_widget.setEnabled(binaries_loaded)
@@ -2341,8 +2364,6 @@ class MainWindow(QMainWindow):
                         locations_label.setStyleSheet("color: gray; font-size: 9pt;")
                         locations_label.setWordWrap(True)
                         patch_layout.addWidget(locations_label)
-
-                        patch.widget = value_widget
 
                     if not binaries_loaded:
                         missing = [
