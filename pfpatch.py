@@ -331,6 +331,13 @@ class MainWindow(QMainWindow):
         self.config_dir: Optional[str] = None
         self.saved_selected_config: Optional[str] = None
         self.enable_binary_backups: bool = True
+        self.all_patches: List[Patch] = []  # Store all patches for filtering
+        self.patch_widgets: Dict[
+            str, QGroupBox
+        ] = {}  # Map patch name to its widget for filtering
+        self.group_widgets: Dict[
+            str, QGroupBox
+        ] = {}  # Map group name to its widget for filtering
 
         # Set backup directory - use executable directory for onefile, or current dir for script
         if getattr(sys, "frozen", False):
@@ -916,6 +923,7 @@ class MainWindow(QMainWindow):
 
         # Update UI after restoration
         if self.current_config:
+            self.all_patches = self.current_config.patches
             self.update_patches_ui(self.current_config.patches)
         self.update_patch_button_state()
         self.update_restore_button_state()
@@ -1925,6 +1933,7 @@ class MainWindow(QMainWindow):
 
                 self.save_settings()
                 if self.current_config:
+                    self.all_patches = self.current_config.patches
                     self.update_patches_ui(self.current_config.patches)
                 self.update_patch_button_state()
                 self.update_restore_button_state()
@@ -2049,6 +2058,10 @@ class MainWindow(QMainWindow):
         self.patch_btn.setEnabled(False)
         self.clear_layout(self.patches_layout)
         self.patches.clear()
+        if hasattr(self, "patch_widgets"):
+            self.patch_widgets.clear()
+        if hasattr(self, "group_widgets"):
+            self.group_widgets.clear()
         self.clear_layout(self.files_layout)
 
         # Close all binary files before clearing
@@ -2094,9 +2107,15 @@ class MainWindow(QMainWindow):
                 self.current_config = Config(**data)
 
             self.clear_ui()
+
+            # Clear filter when config changes
+            if hasattr(self, "patch_filter"):
+                self.patch_filter.clear()
+
             self.update_binary_ui(self.current_config.files)
 
             # Show patches (disabled initially)
+            self.all_patches = self.current_config.patches
             self.update_patches_ui(self.current_config.patches)
 
             # Save selected config (use resolved absolute path for consistency)
@@ -2132,6 +2151,63 @@ class MainWindow(QMainWindow):
             elif item.layout():
                 self.clear_layout(item.layout())
 
+    def _filter_patches(self) -> None:
+        """Filter patches based on the filter text field.
+
+        Filters patches by name, description, or group name (case-insensitive).
+        Shows/hides patch widgets without recreating them to preserve state.
+        """
+        if not hasattr(self, "all_patches") or not self.all_patches:
+            return
+
+        filter_text = self.patch_filter.text().strip().lower()
+
+        # Determine which patches match the filter
+        matching_patches = set()
+        if not filter_text:
+            # Show all patches if filter is empty
+            matching_patches = {patch.name for patch in self.all_patches}
+        else:
+            # Filter patches by name, description, or group
+            for patch in self.all_patches:
+                # Check name
+                if filter_text in patch.name.lower():
+                    matching_patches.add(patch.name)
+                    continue
+
+                # Check description
+                if patch.description and filter_text in patch.description.lower():
+                    matching_patches.add(patch.name)
+                    continue
+
+                # Check group
+                group_name = patch.group if patch.group else "Ungrouped"
+                if filter_text in group_name.lower():
+                    matching_patches.add(patch.name)
+
+        # Show/hide patch widgets based on filter
+        # Only filter if widgets have been created
+        if not self.patch_widgets:
+            return
+
+        for patch_name, patch_widget in self.patch_widgets.items():
+            if patch_name in matching_patches:
+                patch_widget.setVisible(True)
+            else:
+                patch_widget.setVisible(False)
+
+        # Show/hide group boxes based on whether they have visible patches
+        for group_name, group_box in self.group_widgets.items():
+            # Check if any patch in this group is visible
+            has_visible_patch = False
+            for patch in self.all_patches:
+                patch_group_name = patch.group if patch.group else "Ungrouped"
+                if patch_group_name == group_name and patch.name in matching_patches:
+                    has_visible_patch = True
+                    break
+
+            group_box.setVisible(has_visible_patch)
+
     def update_patches_ui(self, patches: List[Patch]):
         """Update the patches UI with the given list of patches.
 
@@ -2152,6 +2228,8 @@ class MainWindow(QMainWindow):
         """
         self.clear_layout(self.patches_layout)
         self.patches.clear()
+        self.patch_widgets.clear()
+        self.group_widgets.clear()
 
         # Group patches by their 'group' field
         grouped_patches: Dict[str, List[Patch]] = {}
@@ -2168,6 +2246,7 @@ class MainWindow(QMainWindow):
             group_box.setSizePolicy(
                 QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum
             )
+            self.group_widgets[group_name] = group_box
             group_layout = QVBoxLayout()
             group_layout.setContentsMargins(5, 5, 5, 5)
 
@@ -2696,6 +2775,7 @@ class MainWindow(QMainWindow):
                     # Add patch to the group layout
                     group_layout.addWidget(patch_group)
                     self.patches[patch.name] = patch
+                    self.patch_widgets[patch.name] = patch_group
                 except Exception as e:
                     QMessageBox.warning(
                         self, "Error", f"Error processing patch {patch.name}: {e}"
@@ -2828,6 +2908,19 @@ class MainWindow(QMainWindow):
         # -----------------------------------------
         patches_group = QGroupBox("Patches")
         patches_layout = QVBoxLayout()
+
+        # Filter text field
+        filter_layout = QHBoxLayout()
+        filter_label = QLabel("Filter:")
+        self.patch_filter = QLineEdit()
+        self.patch_filter.setPlaceholderText(
+            "Search patches by name, description, or group..."
+        )
+        self.patch_filter.textChanged.connect(self._filter_patches)
+        filter_layout.addWidget(filter_label)
+        filter_layout.addWidget(self.patch_filter)
+        patches_layout.addLayout(filter_layout)
+
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setStyleSheet("""
