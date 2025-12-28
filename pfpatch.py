@@ -26,6 +26,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QSizePolicy,
     QMessageBox,
+    QProgressDialog,
 )
 
 from PyQt6.QtCore import Qt
@@ -510,19 +511,37 @@ class MainWindow(QMainWindow):
             if len(binary_data) < len(search_pattern):
                 return None
 
+            # Optimize: find first non-wildcard byte to start search
+            first_fixed_byte = None
+            first_fixed_index = 0
+            for idx, (byte_val, is_wildcard) in enumerate(search_pattern):
+                if not is_wildcard:
+                    first_fixed_byte = byte_val
+                    first_fixed_index = idx
+                    break
+
             # Search for pattern
             pattern_len = len(search_pattern)
-            for i in range(len(binary_data) - pattern_len + 1):
-                match = True
-                for j, (expected_byte, is_wildcard) in enumerate(search_pattern):
-                    if not is_wildcard and binary_data[i + j] != expected_byte:
-                        match = False
-                        break
 
-                if match:
-                    # Found match at RVA i, convert to virtual address
-                    # The memory-mapped image is already in RVA space
-                    return binary.OPTIONAL_HEADER.ImageBase + i
+            if first_fixed_byte is not None:
+                # Optimized search: start by finding the first fixed byte
+                for i in range(len(binary_data) - pattern_len + 1):
+                    if binary_data[i + first_fixed_index] == first_fixed_byte:
+                        # Potential match, check full pattern
+                        match = True
+                        for j, (expected_byte, is_wildcard) in enumerate(
+                            search_pattern
+                        ):
+                            if not is_wildcard and binary_data[i + j] != expected_byte:
+                                match = False
+                                break
+
+                        if match:
+                            # Found match at RVA i, convert to virtual address
+                            return binary.OPTIONAL_HEADER.ImageBase + i
+            else:
+                # All wildcards - shouldn't happen, but handle it
+                return binary.OPTIONAL_HEADER.ImageBase
 
             return None
         except Exception:
@@ -1248,6 +1267,8 @@ class MainWindow(QMainWindow):
             Only processes patches where required binaries are loaded and
             patch widgets are enabled. Skips patches with validation errors.
         """
+        progress = None
+        total_patches = 0
         try:
             # Collect all binaries that will be modified
             binaries_to_modify = set()
@@ -1286,6 +1307,62 @@ class MainWindow(QMainWindow):
                     if patch.widget is not None and patch.widget.isChecked():
                         binaries_to_modify.update(required_binaries)
 
+            # Count patches that will be processed for progress bar
+            patches_to_process = []
+            for patch_name, patch in self.patches.items():
+                try:
+                    changes_by_binary = self._group_changes_by_binary(patch)
+                except ValueError:
+                    continue
+
+                required_binaries = set(changes_by_binary.keys())
+
+                # Check if all binaries are loaded
+                if any(b not in self.binary_files for b in required_binaries):
+                    continue
+
+                # Skip if patch widget is disabled (only for editable patches with editable changes)
+                if (
+                    patch.editable
+                    and patch.widget is not None
+                    and not patch.widget.isEnabled()
+                ):
+                    continue
+
+                # Check if this patch will be processed
+                will_process = False
+                if patch.editable:
+                    if patch.widget is not None:
+                        new_value_text = patch.widget.text().strip()
+                        if new_value_text:  # Has a value to apply
+                            will_process = True
+                        # Empty value might restore, but we'll include it
+                        if not new_value_text and self.is_binary_patched(
+                            list(required_binaries)[0] if required_binaries else None
+                        ):
+                            will_process = True
+                else:
+                    # For checkbox patches, include if checked
+                    if patch.widget is not None and patch.widget.isChecked():
+                        will_process = True
+                    # Or if it needs to be restored
+                    elif self.is_patch_applied(patch):
+                        will_process = True
+
+                if will_process:
+                    patches_to_process.append((patch_name, patch))
+
+            # Create progress dialog
+            total_patches = len(patches_to_process)
+            if total_patches > 0:
+                progress = QProgressDialog(
+                    "Applying patches...", "Cancel", 0, total_patches, self
+                )
+                progress.setWindowModality(Qt.WindowModality.WindowModal)
+                progress.setMinimumDuration(0)  # Show immediately
+                progress.setValue(0)
+                QApplication.processEvents()  # Update UI
+
             # Backup whole binaries if enabled and no backup exists
             backed_up_binaries = []
             if self.enable_binary_backups:
@@ -1294,7 +1371,53 @@ class MainWindow(QMainWindow):
                         if self.backup_binary_file(binary_name):
                             backed_up_binaries.append(binary_name)
 
+            # Collect all changes that need backing up (batch backup operations)
+            # This avoids reading/writing backup files multiple times
+            changes_to_backup: Dict[str, List[PatchChange]] = {}
+
+            for patch_name, patch in self.patches.items():
+                try:
+                    changes_by_binary = self._group_changes_by_binary(patch)
+                except ValueError:
+                    continue
+
+                required_binaries = set(changes_by_binary.keys())
+
+                # Check if all binaries are loaded
+                if any(b not in self.binary_files for b in required_binaries):
+                    continue
+
+                # Skip if patch widget is disabled
+                if (
+                    patch.editable
+                    and patch.widget is not None
+                    and not patch.widget.isEnabled()
+                ):
+                    continue
+
+                # Collect changes that need backing up
+                if patch.editable:
+                    if patch.widget is not None:
+                        new_value_text = patch.widget.text().strip()
+                        if new_value_text:  # Has a value to apply, needs backup
+                            for binary_name, changes in changes_by_binary.items():
+                                if binary_name not in changes_to_backup:
+                                    changes_to_backup[binary_name] = []
+                                changes_to_backup[binary_name].extend(changes)
+                else:
+                    # Non-editable patch - backup if checked
+                    if patch.widget is not None and patch.widget.isChecked():
+                        for binary_name, changes in changes_by_binary.items():
+                            if binary_name not in changes_to_backup:
+                                changes_to_backup[binary_name] = []
+                            changes_to_backup[binary_name].extend(changes)
+
+            # Batch save all backups (one file write per binary instead of one per patch)
+            for binary_name, changes in changes_to_backup.items():
+                self.save_original_bytes(binary_name, changes)
+
             modified_binaries = set()
+            processed_count = 0
 
             for patch_name, patch in self.patches.items():
                 try:
@@ -1329,10 +1452,7 @@ class MainWindow(QMainWindow):
                             c for c in patch.changes if c.value is not None
                         ]
 
-                        # Save original bytes before patching (for all changes)
-                        for binary_name, changes in changes_by_binary.items():
-                            self.save_original_bytes(binary_name, changes)
-
+                        # Original bytes already backed up in batch above
                         # Handle editable changes (if any)
                         stored_value_int = None
                         if editable_changes:
@@ -1351,6 +1471,26 @@ class MainWindow(QMainWindow):
                                     if self.is_binary_patched(binary_name):
                                         if self.restore_original_bytes(binary_name):
                                             modified_binaries.add(binary_name)
+                                processed_count += 1
+                                if total_patches > 0:
+                                    progress.setValue(processed_count)
+                                    progress.setLabelText(
+                                        f"Applying patches... ({processed_count}/{total_patches})"
+                                    )
+                                    # Only process events every 5 patches or on last patch to reduce overhead
+                                    if (
+                                        processed_count % 5 == 0
+                                        or processed_count == total_patches
+                                    ):
+                                        QApplication.processEvents()
+                                    if progress.wasCanceled():
+                                        progress.close()
+                                        QMessageBox.warning(
+                                            self,
+                                            "Cancelled",
+                                            "Patch operation was cancelled.",
+                                        )
+                                        return
                                 continue
 
                             # Get first editable change for input_formula (each change uses its own size when writing)
@@ -1578,6 +1718,26 @@ class MainWindow(QMainWindow):
 
                         if success:
                             modified_binaries.update(required_binaries)
+                            processed_count += 1
+                            if total_patches > 0:
+                                progress.setValue(processed_count)
+                                progress.setLabelText(
+                                    f"Applying patches... ({processed_count}/{total_patches})"
+                                )
+                                # Only process events every 5 patches or on last patch to reduce overhead
+                                if (
+                                    processed_count % 5 == 0
+                                    or processed_count == total_patches
+                                ):
+                                    QApplication.processEvents()
+                                if progress.wasCanceled():
+                                    progress.close()
+                                    QMessageBox.warning(
+                                        self,
+                                        "Cancelled",
+                                        "Patch operation was cancelled.",
+                                    )
+                                    return
                     except ValueError as e:
                         QMessageBox.warning(
                             self, "Error", f"Invalid value in {patch_name}: {str(e)}"
@@ -1593,9 +1753,8 @@ class MainWindow(QMainWindow):
                 else:
                     # Non-editable patch
                     if patch.widget is not None and patch.widget.isChecked():
+                        # Original bytes already backed up in batch above
                         for binary_name, changes in changes_by_binary.items():
-                            self.save_original_bytes(binary_name, changes)
-
                             _, binary = self.binary_files[binary_name]
                             for change in changes:
                                 if change.value is None:
@@ -1637,12 +1796,52 @@ class MainWindow(QMainWindow):
                                     addr = self._offset_to_rva(resolved_offset, binary)
                                     binary.set_bytes_at_rva(addr, final_value)
                             modified_binaries.add(binary_name)
+                            processed_count += 1
+                            if total_patches > 0:
+                                progress.setValue(processed_count)
+                                progress.setLabelText(
+                                    f"Applying patches... ({processed_count}/{total_patches})"
+                                )
+                                # Only process events every 5 patches or on last patch to reduce overhead
+                                if (
+                                    processed_count % 5 == 0
+                                    or processed_count == total_patches
+                                ):
+                                    QApplication.processEvents()
+                                if progress.wasCanceled():
+                                    progress.close()
+                                    QMessageBox.warning(
+                                        self,
+                                        "Cancelled",
+                                        "Patch operation was cancelled.",
+                                    )
+                                    return
                     else:
                         # Only restore if the patch was previously applied (currently active)
                         if self.is_patch_applied(patch):
                             for binary_name in required_binaries:
                                 if self.restore_original_bytes(binary_name):
                                     modified_binaries.add(binary_name)
+                            processed_count += 1
+                            if total_patches > 0:
+                                progress.setValue(processed_count)
+                                progress.setLabelText(
+                                    f"Applying patches... ({processed_count}/{total_patches})"
+                                )
+                                # Only process events every 5 patches or on last patch to reduce overhead
+                                if (
+                                    processed_count % 5 == 0
+                                    or processed_count == total_patches
+                                ):
+                                    QApplication.processEvents()
+                                if progress.wasCanceled():
+                                    progress.close()
+                                    QMessageBox.warning(
+                                        self,
+                                        "Cancelled",
+                                        "Patch operation was cancelled.",
+                                    )
+                                    return
 
             # Write all modified binaries
             for binary_name in modified_binaries:
@@ -1672,6 +1871,12 @@ class MainWindow(QMainWindow):
                     f"Location: {backup_dir_abs}"
                 )
 
+            # Close progress dialog
+            if progress is not None:
+                progress.setValue(total_patches)
+                QApplication.processEvents()  # Ensure final update is shown
+                progress.close()
+
             if success_parts:
                 QMessageBox.information(self, "Success", "\n\n".join(success_parts))
             else:
@@ -1680,6 +1885,9 @@ class MainWindow(QMainWindow):
             # Update restore button state in case backups were created
             self.update_restore_button_state()
         except Exception as e:
+            # Close progress dialog if it exists
+            if progress is not None:
+                progress.close()
             QMessageBox.critical(self, "Error", f"Failed to apply patches: {e}")
 
     def select_binary(
