@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple, Union
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 from PyQt6.QtWidgets import (
     QApplication,
