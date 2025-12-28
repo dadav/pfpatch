@@ -133,8 +133,10 @@ class PatchChange(BaseModel):
                 continue  # Wildcard byte
             try:
                 int(part, 16)
-                if len(part) > 2:
-                    raise ValueError(f"Invalid hex byte in pattern: {part}")
+                if len(part) != 2:
+                    raise ValueError(
+                        f"Invalid hex byte in pattern: {part} (must be exactly 2 hex digits)"
+                    )
             except ValueError:
                 raise ValueError(f"Invalid pattern format: {v}")
         return v
@@ -1020,10 +1022,15 @@ class MainWindow(QMainWindow):
                 )
                 continue  # Skip this change but continue with others
 
-            # Handle repeat: backup all offsets that will be modified
             if change.value is not None and change.repeat is not None:
                 value_size = len(bytes.fromhex(change.value))
-                for i in range(change.repeat):
+                # Convert hex string to int if needed (e.g., "0x14FF" -> int)
+                repeat_count = (
+                    int(change.repeat, 0)
+                    if isinstance(change.repeat, str)
+                    else change.repeat
+                )
+                for i in range(repeat_count):
                     current_offset = resolved_offset + (i * value_size)
                     # Skip if this offset is already saved
                     if current_offset in existing_offsets:
@@ -1039,7 +1046,12 @@ class MainWindow(QMainWindow):
                             }
                         )
                         existing_offsets.add(current_offset)
-                    except (pefile.PEFormatError, ValueError, IndexError, AttributeError) as e:
+                    except (
+                        pefile.PEFormatError,
+                        ValueError,
+                        IndexError,
+                        AttributeError,
+                    ) as e:
                         QMessageBox.warning(
                             self,
                             "Warning",
@@ -1078,7 +1090,12 @@ class MainWindow(QMainWindow):
                         }
                     )
                     existing_offsets.add(resolved_offset)
-                except (pefile.PEFormatError, ValueError, IndexError, AttributeError) as e:
+                except (
+                    pefile.PEFormatError,
+                    ValueError,
+                    IndexError,
+                    AttributeError,
+                ) as e:
                     QMessageBox.warning(
                         self,
                         "Warning",
@@ -1135,14 +1152,37 @@ class MainWindow(QMainWindow):
                 resolved_offset = self._resolve_change_offset(change, binary)
                 if resolved_offset is None:
                     return False
-                addr = self._offset_to_rva(resolved_offset, binary)
+
                 desired = bytes.fromhex(change.value)
-                try:
-                    current = binary.get_data(addr, len(desired))
-                    if current != desired:
+
+                # Handle repeat: check all repeated locations
+                if change.repeat is not None:
+                    value_size = len(desired)
+                    # Convert hex string to int if needed (e.g., "0x14FF" -> int)
+                    repeat_count = (
+                        int(change.repeat, 0)
+                        if isinstance(change.repeat, str)
+                        else change.repeat
+                    )
+
+                    for i in range(repeat_count):
+                        current_offset = resolved_offset + (i * value_size)
+                        addr = self._offset_to_rva(current_offset, binary)
+                        try:
+                            current = binary.get_data(addr, len(desired))
+                            if current != desired:
+                                return False
+                        except Exception:
+                            return False
+                else:
+                    # Single location check (no repeat)
+                    addr = self._offset_to_rva(resolved_offset, binary)
+                    try:
+                        current = binary.get_data(addr, len(desired))
+                        if current != desired:
+                            return False
+                    except Exception:
                         return False
-                except Exception:
-                    return False
 
         return True
 
@@ -1288,6 +1328,10 @@ class MainWindow(QMainWindow):
                         fixed_changes = [
                             c for c in patch.changes if c.value is not None
                         ]
+
+                        # Save original bytes before patching (for all changes)
+                        for binary_name, changes in changes_by_binary.items():
+                            self.save_original_bytes(binary_name, changes)
 
                         # Handle editable changes (if any)
                         stored_value_int = None
@@ -1462,7 +1506,9 @@ class MainWindow(QMainWindow):
 
                                         try:
                                             final_value = final_value_int.to_bytes(
-                                                change.size, byteorder="little", signed=False
+                                                change.size,
+                                                byteorder="little",
+                                                signed=False,
                                             )
                                         except Exception as e:
                                             QMessageBox.warning(
@@ -1494,7 +1540,12 @@ class MainWindow(QMainWindow):
 
                                         # Handle repeat: write the value multiple times at consecutive offsets
                                         if change.repeat is not None:
-                                            repeat_count = change.repeat
+                                            # Convert hex string to int if needed (e.g., "0x14FF" -> int)
+                                            repeat_count = (
+                                                int(change.repeat, 0)
+                                                if isinstance(change.repeat, str)
+                                                else change.repeat
+                                            )
                                             value_size = len(final_value)
 
                                             # Write the value 'repeat' times at consecutive offsets
@@ -1540,6 +1591,7 @@ class MainWindow(QMainWindow):
                         )
                         continue
                 else:
+                    # Non-editable patch
                     if patch.widget is not None and patch.widget.isChecked():
                         for binary_name, changes in changes_by_binary.items():
                             self.save_original_bytes(binary_name, changes)
@@ -1559,10 +1611,31 @@ class MainWindow(QMainWindow):
                                         f"Failed to resolve offset for change in patch {patch_name}: pattern not found or invalid",
                                     )
                                     continue
-                                addr = self._offset_to_rva(resolved_offset, binary)
-                                binary.set_bytes_at_rva(
-                                    addr, bytes.fromhex(change.value)
-                                )
+
+                                # Handle repeat: write the value multiple times at consecutive offsets
+                                final_value = bytes.fromhex(change.value)
+                                if change.repeat is not None:
+                                    # Convert hex string to int if needed (e.g., "0x14FF" -> int)
+                                    repeat_count = (
+                                        int(change.repeat, 0)
+                                        if isinstance(change.repeat, str)
+                                        else change.repeat
+                                    )
+                                    value_size = len(final_value)
+
+                                    # Write the value 'repeat' times at consecutive offsets
+                                    for i in range(repeat_count):
+                                        current_offset = resolved_offset + (
+                                            i * value_size
+                                        )
+                                        addr = self._offset_to_rva(
+                                            current_offset, binary
+                                        )
+                                        binary.set_bytes_at_rva(addr, final_value)
+                                else:
+                                    # Single write (no repeat)
+                                    addr = self._offset_to_rva(resolved_offset, binary)
+                                    binary.set_bytes_at_rva(addr, final_value)
                             modified_binaries.add(binary_name)
                     else:
                         # Only restore if the patch was previously applied (currently active)
@@ -2307,22 +2380,56 @@ class MainWindow(QMainWindow):
                                     if resolved_offset is None:
                                         all_match = False
                                         break
-                                    addr = self._offset_to_rva(
-                                        resolved_offset, change_binary
-                                    )
+
                                     desired = bytes.fromhex(change.value)
-                                    current = change_binary.get_data(addr, len(desired))
-                                    if current != desired:
-                                        all_match = False
-                                        break
+
+                                    # Handle repeat: check all repeated locations
+                                    if change.repeat is not None:
+                                        value_size = len(desired)
+                                        # Convert hex string to int if needed (e.g., "0x14FF" -> int)
+                                        repeat_count = (
+                                            int(change.repeat, 0)
+                                            if isinstance(change.repeat, str)
+                                            else change.repeat
+                                        )
+
+                                        for i in range(repeat_count):
+                                            current_offset = resolved_offset + (
+                                                i * value_size
+                                            )
+                                            addr = self._offset_to_rva(
+                                                current_offset, change_binary
+                                            )
+                                            current = change_binary.get_data(
+                                                addr, len(desired)
+                                            )
+                                            if current != desired:
+                                                all_match = False
+                                                break
+
+                                        if not all_match:
+                                            break
+                                    else:
+                                        # Single location check (no repeat)
+                                        addr = self._offset_to_rva(
+                                            resolved_offset, change_binary
+                                        )
+                                        current = change_binary.get_data(
+                                            addr, len(desired)
+                                        )
+                                        if current != desired:
+                                            all_match = False
+                                            break
 
                                 if all_match:
                                     value_widget.setChecked(True)
                             except Exception:
-                                # If we can't read the bytes, assume not patched
                                 pass
 
                         patch_layout.addWidget(value_widget)
+
+                        # Store widget reference so apply_patches can check if it's checked
+                        patch.widget = value_widget
 
                         # Always show location information
                         location_parts = []
