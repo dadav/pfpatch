@@ -1804,26 +1804,26 @@ class MainWindow(QMainWindow):
                                     addr = self._offset_to_rva(resolved_offset, binary)
                                     binary.set_bytes_at_rva(addr, final_value)
                             modified_binaries.add(binary_name)
-                            processed_count += 1
-                            if total_patches > 0:
-                                progress.setValue(processed_count)
-                                progress.setLabelText(
-                                    f"Applying patches... ({processed_count}/{total_patches})"
+                        processed_count += 1
+                        if total_patches > 0:
+                            progress.setValue(processed_count)
+                            progress.setLabelText(
+                                f"Applying patches... ({processed_count}/{total_patches})"
+                            )
+                            # Only process events every 5 patches or on last patch to reduce overhead
+                            if (
+                                processed_count % 5 == 0
+                                or processed_count == total_patches
+                            ):
+                                QApplication.processEvents()
+                            if progress.wasCanceled():
+                                progress.close()
+                                QMessageBox.warning(
+                                    self,
+                                    "Cancelled",
+                                    "Patch operation was cancelled.",
                                 )
-                                # Only process events every 5 patches or on last patch to reduce overhead
-                                if (
-                                    processed_count % 5 == 0
-                                    or processed_count == total_patches
-                                ):
-                                    QApplication.processEvents()
-                                if progress.wasCanceled():
-                                    progress.close()
-                                    QMessageBox.warning(
-                                        self,
-                                        "Cancelled",
-                                        "Patch operation was cancelled.",
-                                    )
-                                    return
+                                return
                     else:
                         # Only restore if the patch was previously applied (currently active)
                         if self.is_patch_applied(patch):
