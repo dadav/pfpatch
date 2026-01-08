@@ -2760,6 +2760,14 @@ class MainWindow(QMainWindow):
         main_layout.addLayout(backup_restore_layout)
         main_layout.addWidget(self.patch_btn)
 
+        # Version label at bottom right
+        version_label = QLabel(f"v{__version__}")
+        version_label.setStyleSheet("color: gray; font-size: 11px;")
+        version_layout = QHBoxLayout()
+        version_layout.addStretch()
+        version_layout.addWidget(version_label)
+        main_layout.addLayout(version_layout)
+
     def _on_binary_backup_changed(self, state: int) -> None:
         """Handle binary backup checkbox state change.
 
