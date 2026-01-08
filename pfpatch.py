@@ -3,11 +3,18 @@ import yaml
 import pefile
 import shutil
 import struct
+import tomllib
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple, Union
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-__version__ = "0.7.0"
+def _get_version() -> str:
+    pyproject_path = Path(__file__).parent / "pyproject.toml"
+    with open(pyproject_path, "rb") as f:
+        data = tomllib.load(f)
+    return data["project"]["version"]
+
+__version__ = _get_version()
 
 from PyQt6.QtWidgets import (
     QApplication,
@@ -480,9 +487,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             raise ValueError(f"Error evaluating formula '{formula}': {e}")
 
-    def _value_to_bytes(
-        self, value: Union[int, float], change: PatchChange
-    ) -> bytes:
+    def _value_to_bytes(self, value: Union[int, float], change: PatchChange) -> bytes:
         """Convert a value to bytes based on change configuration.
 
         Args:
@@ -2520,7 +2525,9 @@ class MainWindow(QMainWindow):
                                         all_match = False
                                         break
                                     for offset in offsets:
-                                        addr = self._offset_to_rva(offset, change_binary)
+                                        addr = self._offset_to_rva(
+                                            offset, change_binary
+                                        )
                                         current = change_binary.get_data(
                                             addr, len(desired)
                                         )
