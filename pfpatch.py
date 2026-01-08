@@ -480,6 +480,46 @@ class MainWindow(QMainWindow):
         except Exception as e:
             raise ValueError(f"Error evaluating formula '{formula}': {e}")
 
+    def _value_to_bytes(
+        self, value: Union[int, float], change: PatchChange
+    ) -> bytes:
+        """Convert a value to bytes based on change configuration.
+
+        Args:
+            value: The value to convert
+            change: PatchChange with size and type information
+
+        Returns:
+            Bytes representation of the value
+
+        Raises:
+            ValueError: If value is out of range or conversion fails
+        """
+        data_type = change.type or "int"
+        size = change.size
+
+        if data_type == "double":
+            if size != 8:
+                raise ValueError(f"Double type requires size 8, got {size}")
+            return struct.pack("<d", float(value))
+        elif data_type == "float":
+            if size != 4:
+                raise ValueError(f"Float type requires size 4, got {size}")
+            return struct.pack("<f", float(value))
+        else:
+            # Integer type
+            int_value = int(value)
+            max_value = (1 << (size * 8)) - 1
+            if int_value > max_value:
+                raise ValueError(
+                    f"Value {int_value} exceeds maximum for {size} byte(s)"
+                )
+            if int_value < 0:
+                raise ValueError(
+                    f"Value {int_value} is negative. Only unsigned integers are supported."
+                )
+            return int_value.to_bytes(size, byteorder="little", signed=False)
+
     def _search_pattern(self, pattern: str, binary: pefile.PE) -> Optional[int]:
         """Search for a pattern in the binary and return the offset (virtual address) of the first match
 
@@ -579,6 +619,28 @@ class MainWindow(QMainWindow):
         pattern_offset = change.pattern_offset or 0
         return match_offset + pattern_offset
 
+    def _iter_change_offsets(
+        self, change: PatchChange, binary: pefile.PE, value_size: int
+    ) -> List[int]:
+        """Generate list of offsets for a change, handling repeat.
+
+        Args:
+            change: The patch change
+            binary: PE file object
+            value_size: Size of the value in bytes (for calculating repeat offsets)
+
+        Returns:
+            List of virtual address offsets. Returns empty list if base offset
+            cannot be resolved.
+        """
+        base_offset = self._resolve_change_offset(change, binary)
+        if base_offset is None:
+            return []
+
+        if change.repeat is not None:
+            return [base_offset + (i * value_size) for i in range(change.repeat)]
+        return [base_offset]
+
     def _get_change_binary(
         self, change: PatchChange, default_binary: Optional[str]
     ) -> str:
@@ -638,6 +700,91 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass  # Ignore errors when closing
             del self.binary_files[binary_name]
+
+    def _build_locations_label(
+        self, patch: Patch, binaries_loaded: bool, show_editable_indicator: bool = False
+    ) -> QLabel:
+        """Build a label showing location information for a patch.
+
+        Args:
+            patch: The patch to build location info for
+            binaries_loaded: Whether required binaries are loaded
+            show_editable_indicator: Whether to show [editable]/[fixed] indicators
+
+        Returns:
+            QLabel with formatted location text
+        """
+        location_parts = []
+        for c in patch.changes:
+            if c.offset is not None:
+                part = f"{c.offset:#x}"
+            elif c.pattern is not None:
+                part = f"pattern: {c.pattern}"
+                if binaries_loaded:
+                    change_binary_name = self._get_change_binary(c, patch.file)
+                    if change_binary_name in self.binary_files:
+                        _, change_binary = self.binary_files[change_binary_name]
+                        resolved = self._resolve_change_offset(c, change_binary)
+                        if resolved is not None:
+                            part += f" → {resolved:#x}"
+            else:
+                part = "unknown"
+
+            if show_editable_indicator:
+                if c.size is not None:
+                    part += " [editable]"
+                elif c.value is not None:
+                    part += " [fixed]"
+
+            if c.formula:
+                part += f" ({c.formula})"
+            location_parts.append(part)
+
+        if len(patch.changes) > 1:
+            locations_text = (
+                f"Applies to {len(patch.changes)} location(s): "
+                + ", ".join(location_parts)
+            )
+        else:
+            locations_text = f"Location: {location_parts[0]}"
+
+        locations_label = QLabel(locations_text)
+        locations_label.setStyleSheet("color: gray; font-size: 9pt;")
+        locations_label.setWordWrap(True)
+        return locations_label
+
+    def _update_progress(
+        self,
+        progress: QProgressDialog,
+        processed_count: int,
+        total_patches: int,
+    ) -> bool:
+        """Update progress dialog and check for cancellation.
+
+        Args:
+            progress: The progress dialog to update
+            processed_count: Number of patches processed so far
+            total_patches: Total number of patches to process
+
+        Returns:
+            True if cancelled, False to continue
+        """
+        progress.setValue(processed_count)
+        progress.setLabelText(
+            f"Applying patches... ({processed_count}/{total_patches})"
+        )
+        # Only process events every 5 patches or on last patch to reduce overhead
+        if processed_count % 5 == 0 or processed_count == total_patches:
+            QApplication.processEvents()
+        if progress.wasCanceled():
+            progress.close()
+            QMessageBox.warning(
+                self,
+                "Cancelled",
+                "Patch operation was cancelled.",
+            )
+            return True
+        return False
 
     def load_settings(self) -> None:
         """Load saved binary paths and config directory from settings file.
@@ -900,10 +1047,11 @@ class MainWindow(QMainWindow):
             return
 
         # Confirm restoration
+        count = len(binaries_with_backups)
         reply = QMessageBox.question(
             self,
             "Confirm Restore",
-            f"Restore {len(binaries_with_backups)} binary/binar{'y' if len(binaries_with_backups) == 1 else 'ies'} from backup?\n\n"
+            f"Restore {count} {'binary' if count == 1 else 'binaries'} from backup?\n\n"
             f"This will overwrite the current files: {', '.join(binaries_with_backups)}",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
@@ -930,10 +1078,11 @@ class MainWindow(QMainWindow):
 
         # Show results
         if restored and not failed:
+            count = len(restored)
             QMessageBox.information(
                 self,
                 "Success",
-                f"Successfully restored {len(restored)} binary/binar{'y' if len(restored) == 1 else 'ies'}:\n"
+                f"Successfully restored {count} {'binary' if count == 1 else 'binaries'}:\n"
                 + "\n".join(restored),
             )
         elif restored and failed:
@@ -984,6 +1133,9 @@ class MainWindow(QMainWindow):
 
         Returns:
             Integer offset value
+
+        Raises:
+            ValueError: If offset is not an int or str
         """
         if isinstance(offset, int):
             return offset
@@ -993,7 +1145,7 @@ class MainWindow(QMainWindow):
                 return int(offset, 16)
             # Try parsing as decimal
             return int(offset)
-        return offset
+        raise ValueError(f"Invalid offset type: {type(offset)}. Must be int or str.")
 
     def save_original_bytes(self, binary_name: str, changes: List[PatchChange]) -> None:
         """Save original bytes before first patch.
@@ -1039,84 +1191,38 @@ class MainWindow(QMainWindow):
         # Collect new offsets that aren't already saved
         new_data = []
         for change in changes:
-            # Resolve offset (from direct offset or pattern match)
-            resolved_offset = self._resolve_change_offset(change, binary)
-            if resolved_offset is None:
+            # Determine size for this change
+            size = (
+                len(bytes.fromhex(change.value))
+                if change.value is not None
+                else change.size
+            )
+            if size is None:
+                continue
+
+            # Get all offsets for this change (handles repeat)
+            offsets = self._iter_change_offsets(change, binary, size)
+            if not offsets:
                 QMessageBox.warning(
                     self,
                     "Warning",
                     "Failed to resolve offset for change: pattern not found or invalid",
                 )
-                continue  # Skip this change but continue with others
+                continue
 
-            if change.value is not None and change.repeat is not None:
-                value_size = len(bytes.fromhex(change.value))
-                # Convert hex string to int if needed (e.g., "0x14FF" -> int)
-                repeat_count = (
-                    int(change.repeat, 0)
-                    if isinstance(change.repeat, str)
-                    else change.repeat
-                )
-                for i in range(repeat_count):
-                    current_offset = resolved_offset + (i * value_size)
-                    # Skip if this offset is already saved
-                    if current_offset in existing_offsets:
-                        continue
-                    addr = self._offset_to_rva(current_offset, binary)
-                    try:
-                        original_bytes = binary.get_data(addr, value_size)
-                        # Save offset as hex string
-                        new_data.append(
-                            {
-                                "offset": f"{current_offset:#x}",
-                                "value": original_bytes.hex(),
-                            }
-                        )
-                        existing_offsets.add(current_offset)
-                    except (
-                        pefile.PEFormatError,
-                        ValueError,
-                        IndexError,
-                        AttributeError,
-                    ) as e:
-                        QMessageBox.warning(
-                            self,
-                            "Warning",
-                            f"Failed to read original bytes at offset {current_offset:#x}: {e}",
-                        )
-                        continue  # Skip this offset but continue with others
-                    except Exception as e:
-                        # Catch any other unexpected errors
-                        QMessageBox.warning(
-                            self,
-                            "Warning",
-                            f"Unexpected error reading bytes at offset {current_offset:#x}: {e}",
-                        )
-                        continue  # Skip this offset but continue with others
-            else:
-                # Single offset backup (no repeat)
-                # Skip if this offset is already saved
-                if resolved_offset in existing_offsets:
+            for current_offset in offsets:
+                if current_offset in existing_offsets:
                     continue
-
-                addr = self._offset_to_rva(resolved_offset, binary)
-                size = (
-                    len(bytes.fromhex(change.value))
-                    if change.value is not None
-                    else change.size
-                )
-                if size is None:
-                    continue
+                addr = self._offset_to_rva(current_offset, binary)
                 try:
                     original_bytes = binary.get_data(addr, size)
-                    # Save offset as hex string
                     new_data.append(
                         {
-                            "offset": f"{resolved_offset:#x}",
+                            "offset": f"{current_offset:#x}",
                             "value": original_bytes.hex(),
                         }
                     )
-                    existing_offsets.add(resolved_offset)
+                    existing_offsets.add(current_offset)
                 except (
                     pefile.PEFormatError,
                     ValueError,
@@ -1126,17 +1232,14 @@ class MainWindow(QMainWindow):
                     QMessageBox.warning(
                         self,
                         "Warning",
-                        f"Failed to read original bytes at offset {resolved_offset:#x}: {e}",
+                        f"Failed to read original bytes at offset {current_offset:#x}: {e}",
                     )
-                    continue  # Skip this change but continue with others
                 except Exception as e:
-                    # Catch any other unexpected errors
                     QMessageBox.warning(
                         self,
                         "Warning",
-                        f"Unexpected error reading bytes at offset {resolved_offset:#x}: {e}",
+                        f"Unexpected error reading bytes at offset {current_offset:#x}: {e}",
                     )
-                    continue  # Skip this change but continue with others
 
         # Merge existing and new data
         merged_data = existing_data + new_data
@@ -1176,34 +1279,14 @@ class MainWindow(QMainWindow):
             for change in changes:
                 if change.value is None:
                     continue
-                resolved_offset = self._resolve_change_offset(change, binary)
-                if resolved_offset is None:
-                    return False
 
                 desired = bytes.fromhex(change.value)
+                offsets = self._iter_change_offsets(change, binary, len(desired))
+                if not offsets:
+                    return False
 
-                # Handle repeat: check all repeated locations
-                if change.repeat is not None:
-                    value_size = len(desired)
-                    # Convert hex string to int if needed (e.g., "0x14FF" -> int)
-                    repeat_count = (
-                        int(change.repeat, 0)
-                        if isinstance(change.repeat, str)
-                        else change.repeat
-                    )
-
-                    for i in range(repeat_count):
-                        current_offset = resolved_offset + (i * value_size)
-                        addr = self._offset_to_rva(current_offset, binary)
-                        try:
-                            current = binary.get_data(addr, len(desired))
-                            if current != desired:
-                                return False
-                        except Exception:
-                            return False
-                else:
-                    # Single location check (no repeat)
-                    addr = self._offset_to_rva(resolved_offset, binary)
+                for current_offset in offsets:
+                    addr = self._offset_to_rva(current_offset, binary)
                     try:
                         current = binary.get_data(addr, len(desired))
                         if current != desired:
@@ -1345,8 +1428,10 @@ class MainWindow(QMainWindow):
                         if new_value_text:  # Has a value to apply
                             will_process = True
                         # Empty value might restore, but we'll include it
-                        if not new_value_text and self.is_binary_patched(
-                            list(required_binaries)[0] if required_binaries else None
+                        if (
+                            not new_value_text
+                            and required_binaries
+                            and self.is_binary_patched(list(required_binaries)[0])
                         ):
                             will_process = True
                 else:
@@ -1480,25 +1565,10 @@ class MainWindow(QMainWindow):
                                         if self.restore_original_bytes(binary_name):
                                             modified_binaries.add(binary_name)
                                 processed_count += 1
-                                if total_patches > 0:
-                                    progress.setValue(processed_count)
-                                    progress.setLabelText(
-                                        f"Applying patches... ({processed_count}/{total_patches})"
-                                    )
-                                    # Only process events every 5 patches or on last patch to reduce overhead
-                                    if (
-                                        processed_count % 5 == 0
-                                        or processed_count == total_patches
-                                    ):
-                                        QApplication.processEvents()
-                                    if progress.wasCanceled():
-                                        progress.close()
-                                        QMessageBox.warning(
-                                            self,
-                                            "Cancelled",
-                                            "Patch operation was cancelled.",
-                                        )
-                                        return
+                                if total_patches > 0 and self._update_progress(
+                                    progress, processed_count, total_patches
+                                ):
+                                    return
                                 continue
 
                             # Get first editable change for input_formula (each change uses its own size when writing)
@@ -1564,114 +1634,26 @@ class MainWindow(QMainWindow):
                                         success = False
                                         break
 
-                                    # Calculate final value using formula if specified, otherwise use stored value as-is
+                                    # Calculate final value using formula if specified
                                     try:
                                         final_value_calc = self._evaluate_formula(
                                             change.formula, stored_value_int
                                         )
-                                    except ValueError as e:
-                                        QMessageBox.warning(
-                                            self,
-                                            "Error",
-                                            f"Invalid formula at offset {resolved_offset:#x}: {e}",
+                                        final_value = self._value_to_bytes(
+                                            final_value_calc, change
                                         )
-                                        success = False
-                                        break
-
-                                    # Handle different data types
-                                    data_type = change.type or "int"
-                                    if data_type == "double":
-                                        # For double, ensure size is 8 and convert to float
-                                        if change.size != 8:
-                                            QMessageBox.warning(
-                                                self,
-                                                "Error",
-                                                f"Double type requires size 8, but got {change.size} at offset {resolved_offset:#x}",
-                                            )
-                                            success = False
-                                            break
-                                        try:
-                                            final_value_float = float(final_value_calc)
-                                            final_value = struct.pack(
-                                                "<d", final_value_float
-                                            )
-                                        except (ValueError, OverflowError) as e:
-                                            QMessageBox.warning(
-                                                self,
-                                                "Error",
-                                                f"Invalid double value {final_value_calc} at offset {resolved_offset:#x}: {e}",
-                                            )
-                                            success = False
-                                            break
-                                    elif data_type == "float":
-                                        # For float, ensure size is 4 and convert to float
-                                        if change.size != 4:
-                                            QMessageBox.warning(
-                                                self,
-                                                "Error",
-                                                f"Float type requires size 4, but got {change.size} at offset {resolved_offset:#x}",
-                                            )
-                                            success = False
-                                            break
-                                        try:
-                                            final_value_float = float(final_value_calc)
-                                            final_value = struct.pack(
-                                                "<f", final_value_float
-                                            )
-                                        except (ValueError, OverflowError) as e:
-                                            QMessageBox.warning(
-                                                self,
-                                                "Error",
-                                                f"Invalid float value {final_value_calc} at offset {resolved_offset:#x}: {e}",
-                                            )
-                                            success = False
-                                            break
-                                    else:
-                                        # Integer type
-                                        final_value_int = int(final_value_calc)
-
-                                        # Check for overflow based on size (unsigned integer)
-                                        # For signed integers, we'd need to check range [-2^(n-1), 2^(n-1)-1]
-                                        # but this code assumes unsigned integers
-                                        max_value = (1 << (change.size * 8)) - 1
-                                        if final_value_int > max_value:
-                                            QMessageBox.warning(
-                                                self,
-                                                "Error",
-                                                f"Value {final_value_int} exceeds maximum for {change.size} byte(s) at offset {resolved_offset:#x}",
-                                            )
-                                            success = False
-                                            break
-                                        if final_value_int < 0:
-                                            QMessageBox.warning(
-                                                self,
-                                                "Error",
-                                                f"Value {final_value_int} is negative at offset {resolved_offset:#x}. "
-                                                f"Note: Only unsigned integers are supported.",
-                                            )
-                                            success = False
-                                            break
-
-                                        try:
-                                            final_value = final_value_int.to_bytes(
-                                                change.size,
-                                                byteorder="little",
-                                                signed=False,
-                                            )
-                                        except Exception as e:
-                                            QMessageBox.warning(
-                                                self,
-                                                "Error",
-                                                f"Failed to convert value to bytes at offset {resolved_offset:#x}: {e}",
-                                            )
-                                            success = False
-                                            break
-
-                                    try:
                                         addr = self._offset_to_rva(
                                             resolved_offset, binary
                                         )
                                         binary.set_bytes_at_rva(addr, final_value)
+                                    except ValueError as e:
+                                        QMessageBox.warning(
+                                            self,
+                                            "Error",
+                                            f"Error at offset {resolved_offset:#x}: {e}",
+                                        )
+                                        success = False
+                                        break
                                     except Exception as e:
                                         QMessageBox.warning(
                                             self,
@@ -1685,33 +1667,11 @@ class MainWindow(QMainWindow):
                                 elif change.value is not None:
                                     try:
                                         final_value = bytes.fromhex(change.value)
-
-                                        # Handle repeat: write the value multiple times at consecutive offsets
-                                        if change.repeat is not None:
-                                            # Convert hex string to int if needed (e.g., "0x14FF" -> int)
-                                            repeat_count = (
-                                                int(change.repeat, 0)
-                                                if isinstance(change.repeat, str)
-                                                else change.repeat
-                                            )
-                                            value_size = len(final_value)
-
-                                            # Write the value 'repeat' times at consecutive offsets
-                                            for i in range(repeat_count):
-                                                current_offset = resolved_offset + (
-                                                    i * value_size
-                                                )
-                                                addr = self._offset_to_rva(
-                                                    current_offset, binary
-                                                )
-                                                binary.set_bytes_at_rva(
-                                                    addr, final_value
-                                                )
-                                        else:
-                                            # Single write (no repeat)
-                                            addr = self._offset_to_rva(
-                                                resolved_offset, binary
-                                            )
+                                        offsets = self._iter_change_offsets(
+                                            change, binary, len(final_value)
+                                        )
+                                        for offset in offsets:
+                                            addr = self._offset_to_rva(offset, binary)
                                             binary.set_bytes_at_rva(addr, final_value)
                                     except Exception as e:
                                         QMessageBox.warning(
@@ -1727,25 +1687,10 @@ class MainWindow(QMainWindow):
                         if success:
                             modified_binaries.update(required_binaries)
                             processed_count += 1
-                            if total_patches > 0:
-                                progress.setValue(processed_count)
-                                progress.setLabelText(
-                                    f"Applying patches... ({processed_count}/{total_patches})"
-                                )
-                                # Only process events every 5 patches or on last patch to reduce overhead
-                                if (
-                                    processed_count % 5 == 0
-                                    or processed_count == total_patches
-                                ):
-                                    QApplication.processEvents()
-                                if progress.wasCanceled():
-                                    progress.close()
-                                    QMessageBox.warning(
-                                        self,
-                                        "Cancelled",
-                                        "Patch operation was cancelled.",
-                                    )
-                                    return
+                            if total_patches > 0 and self._update_progress(
+                                progress, processed_count, total_patches
+                            ):
+                                return
                     except ValueError as e:
                         QMessageBox.warning(
                             self, "Error", f"Invalid value in {patch_name}: {str(e)}"
@@ -1767,63 +1712,26 @@ class MainWindow(QMainWindow):
                             for change in changes:
                                 if change.value is None:
                                     continue
-                                # Resolve offset (from direct offset or pattern match)
-                                resolved_offset = self._resolve_change_offset(
-                                    change, binary
+                                final_value = bytes.fromhex(change.value)
+                                offsets = self._iter_change_offsets(
+                                    change, binary, len(final_value)
                                 )
-                                if resolved_offset is None:
+                                if not offsets:
                                     QMessageBox.warning(
                                         self,
                                         "Error",
                                         f"Failed to resolve offset for change in patch {patch_name}: pattern not found or invalid",
                                     )
                                     continue
-
-                                # Handle repeat: write the value multiple times at consecutive offsets
-                                final_value = bytes.fromhex(change.value)
-                                if change.repeat is not None:
-                                    # Convert hex string to int if needed (e.g., "0x14FF" -> int)
-                                    repeat_count = (
-                                        int(change.repeat, 0)
-                                        if isinstance(change.repeat, str)
-                                        else change.repeat
-                                    )
-                                    value_size = len(final_value)
-
-                                    # Write the value 'repeat' times at consecutive offsets
-                                    for i in range(repeat_count):
-                                        current_offset = resolved_offset + (
-                                            i * value_size
-                                        )
-                                        addr = self._offset_to_rva(
-                                            current_offset, binary
-                                        )
-                                        binary.set_bytes_at_rva(addr, final_value)
-                                else:
-                                    # Single write (no repeat)
-                                    addr = self._offset_to_rva(resolved_offset, binary)
+                                for offset in offsets:
+                                    addr = self._offset_to_rva(offset, binary)
                                     binary.set_bytes_at_rva(addr, final_value)
                             modified_binaries.add(binary_name)
                         processed_count += 1
-                        if total_patches > 0:
-                            progress.setValue(processed_count)
-                            progress.setLabelText(
-                                f"Applying patches... ({processed_count}/{total_patches})"
-                            )
-                            # Only process events every 5 patches or on last patch to reduce overhead
-                            if (
-                                processed_count % 5 == 0
-                                or processed_count == total_patches
-                            ):
-                                QApplication.processEvents()
-                            if progress.wasCanceled():
-                                progress.close()
-                                QMessageBox.warning(
-                                    self,
-                                    "Cancelled",
-                                    "Patch operation was cancelled.",
-                                )
-                                return
+                        if total_patches > 0 and self._update_progress(
+                            progress, processed_count, total_patches
+                        ):
+                            return
                     else:
                         # Only restore if the patch was previously applied (currently active)
                         if self.is_patch_applied(patch):
@@ -1831,25 +1739,10 @@ class MainWindow(QMainWindow):
                                 if self.restore_original_bytes(binary_name):
                                     modified_binaries.add(binary_name)
                             processed_count += 1
-                            if total_patches > 0:
-                                progress.setValue(processed_count)
-                                progress.setLabelText(
-                                    f"Applying patches... ({processed_count}/{total_patches})"
-                                )
-                                # Only process events every 5 patches or on last patch to reduce overhead
-                                if (
-                                    processed_count % 5 == 0
-                                    or processed_count == total_patches
-                                ):
-                                    QApplication.processEvents()
-                                if progress.wasCanceled():
-                                    progress.close()
-                                    QMessageBox.warning(
-                                        self,
-                                        "Cancelled",
-                                        "Patch operation was cancelled.",
-                                    )
-                                    return
+                            if total_patches > 0 and self._update_progress(
+                                progress, processed_count, total_patches
+                            ):
+                                return
 
             # Write all modified binaries
             for binary_name in modified_binaries:
@@ -2597,51 +2490,9 @@ class MainWindow(QMainWindow):
                             patch_layout.addWidget(info_label)
                             patch.widget = None
 
-                        # Always show location information
-                        location_parts = []
-                        for i, c in enumerate(patch.changes):
-                            if c.offset is not None:
-                                part = f"{c.offset:#x}"
-                            elif c.pattern is not None:
-                                part = f"pattern: {c.pattern}"
-                                if binaries_loaded:
-                                    # Try to resolve and show actual offset
-                                    change_binary_name = self._get_change_binary(
-                                        c, patch.file
-                                    )
-                                    if change_binary_name in self.binary_files:
-                                        _, change_binary = self.binary_files[
-                                            change_binary_name
-                                        ]
-                                        resolved = self._resolve_change_offset(
-                                            c, change_binary
-                                        )
-                                        if resolved is not None:
-                                            part += f" → {resolved:#x}"
-                            else:
-                                part = "unknown"
-
-                            # Indicate if change is editable or fixed
-                            if c.size is not None:
-                                part += " [editable]"
-                            elif c.value is not None:
-                                part += " [fixed]"
-
-                            if c.formula:
-                                part += f" ({c.formula})"
-                            location_parts.append(part)
-
-                        if len(patch.changes) > 1:
-                            locations_text = (
-                                f"Applies to {len(patch.changes)} location(s): "
-                                + ", ".join(location_parts)
-                            )
-                        else:
-                            locations_text = f"Location: {location_parts[0]}"
-
-                        locations_label = QLabel(locations_text)
-                        locations_label.setStyleSheet("color: gray; font-size: 9pt;")
-                        locations_label.setWordWrap(True)
+                        locations_label = self._build_locations_label(
+                            patch, binaries_loaded, show_editable_indicator=True
+                        )
                         patch_layout.addWidget(locations_label)
                     else:
                         value_widget = QCheckBox("Enable")
@@ -2661,53 +2512,23 @@ class MainWindow(QMainWindow):
                                     _, change_binary = self.binary_files[
                                         change_binary_name
                                     ]
-                                    resolved_offset = self._resolve_change_offset(
-                                        change, change_binary
+                                    desired = bytes.fromhex(change.value)
+                                    offsets = self._iter_change_offsets(
+                                        change, change_binary, len(desired)
                                     )
-                                    if resolved_offset is None:
+                                    if not offsets:
                                         all_match = False
                                         break
-
-                                    desired = bytes.fromhex(change.value)
-
-                                    # Handle repeat: check all repeated locations
-                                    if change.repeat is not None:
-                                        value_size = len(desired)
-                                        # Convert hex string to int if needed (e.g., "0x14FF" -> int)
-                                        repeat_count = (
-                                            int(change.repeat, 0)
-                                            if isinstance(change.repeat, str)
-                                            else change.repeat
-                                        )
-
-                                        for i in range(repeat_count):
-                                            current_offset = resolved_offset + (
-                                                i * value_size
-                                            )
-                                            addr = self._offset_to_rva(
-                                                current_offset, change_binary
-                                            )
-                                            current = change_binary.get_data(
-                                                addr, len(desired)
-                                            )
-                                            if current != desired:
-                                                all_match = False
-                                                break
-
-                                        if not all_match:
-                                            break
-                                    else:
-                                        # Single location check (no repeat)
-                                        addr = self._offset_to_rva(
-                                            resolved_offset, change_binary
-                                        )
+                                    for offset in offsets:
+                                        addr = self._offset_to_rva(offset, change_binary)
                                         current = change_binary.get_data(
                                             addr, len(desired)
                                         )
                                         if current != desired:
                                             all_match = False
                                             break
-
+                                    if not all_match:
+                                        break
                                 if all_match:
                                     value_widget.setChecked(True)
                             except Exception:
@@ -2718,45 +2539,9 @@ class MainWindow(QMainWindow):
                         # Store widget reference so apply_patches can check if it's checked
                         patch.widget = value_widget
 
-                        # Always show location information
-                        location_parts = []
-                        for i, c in enumerate(patch.changes):
-                            if c.offset is not None:
-                                part = f"{c.offset:#x}"
-                            elif c.pattern is not None:
-                                part = f"pattern: {c.pattern}"
-                                if binaries_loaded:
-                                    # Try to resolve and show actual offset
-                                    change_binary_name = self._get_change_binary(
-                                        c, patch.file
-                                    )
-                                    if change_binary_name in self.binary_files:
-                                        _, change_binary = self.binary_files[
-                                            change_binary_name
-                                        ]
-                                        resolved = self._resolve_change_offset(
-                                            c, change_binary
-                                        )
-                                        if resolved is not None:
-                                            part += f" → {resolved:#x}"
-                            else:
-                                part = "unknown"
-
-                            if c.formula:
-                                part += f" ({c.formula})"
-                            location_parts.append(part)
-
-                        if len(patch.changes) > 1:
-                            locations_text = (
-                                f"Applies to {len(patch.changes)} location(s): "
-                                + ", ".join(location_parts)
-                            )
-                        else:
-                            locations_text = f"Location: {location_parts[0]}"
-
-                        locations_label = QLabel(locations_text)
-                        locations_label.setStyleSheet("color: gray; font-size: 9pt;")
-                        locations_label.setWordWrap(True)
+                        locations_label = self._build_locations_label(
+                            patch, binaries_loaded
+                        )
                         patch_layout.addWidget(locations_label)
 
                     if not binaries_loaded:
