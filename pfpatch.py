@@ -9,7 +9,12 @@ from typing import Dict, List, Optional, Any, Tuple, Union
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 def _get_version() -> str:
-    pyproject_path = Path(__file__).parent / "pyproject.toml"
+    if getattr(sys, "frozen", False):
+        # PyInstaller: look in bundle directory
+        pyproject_path = Path(sys._MEIPASS) / "pyproject.toml"
+    else:
+        # Running as script
+        pyproject_path = Path(__file__).parent / "pyproject.toml"
     with open(pyproject_path, "rb") as f:
         data = tomllib.load(f)
     return data["project"]["version"]

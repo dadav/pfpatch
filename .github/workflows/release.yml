@@ -29,12 +29,12 @@ jobs:
       - name: Build with PyInstaller (Windows)
         if: matrix.os == 'windows-latest'
         run: |
-          uv run pyinstaller --onefile --noconsole --name pfpatch --add-data "patches;patches" --hidden-import pefile --hidden-import yaml --hidden-import PyQt6 --hidden-import PyQt6.QtCore --hidden-import PyQt6.QtWidgets --hidden-import PyQt6.QtGui pfpatch.py
+          uv run pyinstaller --onefile --noconsole --name pfpatch --add-data "patches;patches" --add-data "pyproject.toml;." --hidden-import pefile --hidden-import yaml --hidden-import PyQt6 --hidden-import PyQt6.QtCore --hidden-import PyQt6.QtWidgets --hidden-import PyQt6.QtGui pfpatch.py
 
       - name: Build with PyInstaller (Linux)
         if: matrix.os == 'ubuntu-latest'
         run: |
-          uv run pyinstaller --onefile --noconsole --name pfpatch --add-data "patches:patches" --hidden-import pefile --hidden-import yaml --hidden-import PyQt6 --hidden-import PyQt6.QtCore --hidden-import PyQt6.QtWidgets --hidden-import PyQt6.QtGui pfpatch.py
+          uv run pyinstaller --onefile --noconsole --name pfpatch --add-data "patches:patches" --add-data "pyproject.toml:." --hidden-import pefile --hidden-import yaml --hidden-import PyQt6 --hidden-import PyQt6.QtCore --hidden-import PyQt6.QtWidgets --hidden-import PyQt6.QtGui pfpatch.py
 
       - name: Upload artifact (Windows)
         if: matrix.os == 'windows-latest'
