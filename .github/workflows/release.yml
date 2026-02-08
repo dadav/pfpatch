@@ -90,7 +90,7 @@ jobs:
           mv release-artifacts/pfpatch "release-artifacts/pfpatch-v${{ steps.tag.outputs.VERSION }}-linux"
 
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
         with:
           tag_name: ${{ steps.tag.outputs.TAG_NAME }}
           name: Release ${{ steps.tag.outputs.TAG_NAME }}
